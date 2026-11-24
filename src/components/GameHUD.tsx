@@ -92,7 +92,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       {/* Top Perimeter Row: Left Readouts & Right Utility Controls */}
       <div className="flex items-start justify-between p-2.5 sm:p-5 gap-2 sm:gap-4">
         {/* Top-Left Cluster: Silk, Composure, Active Objective */}
-        <div className="max-w-[190px] sm:max-w-sm rounded border border-[#9ec5ff]/20 bg-[#080d17]/84 px-2.5 py-2 sm:px-4 sm:py-3 shadow-[0_10px_28px_rgba(3,6,12,0.72)]">
+        <div className="max-w-[172px] sm:max-w-sm rounded border border-[#9ec5ff]/20 bg-[#080d17]/84 px-2.5 py-2 sm:px-4 sm:py-3 shadow-[0_10px_28px_rgba(3,6,12,0.72)]">
           <div className="flex items-baseline gap-3 sm:gap-5">
             <div>
               <div className="text-[10px] sm:text-[11px] font-medium tracking-[0.1em] text-[#8fa9cc] uppercase">
@@ -336,64 +336,15 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       </div>
 
-      {/* High-Visibility Silk-Aim & Hunting Reticle */}
-      <div
-        className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
-        aria-hidden="true"
-      >
+      {/* Top-Center Contextual Proximity Action Prompt (leaves Pavutin & center sky clear) */}
+      {(hud.nearAnchorLabel ||
+        hud.canHarvestFly ||
+        hud.canGrappleLabel ||
+        hud.activeThreadFromLabel) && (
         <div
-          className={`relative flex items-center justify-center transition-all duration-150 ${
-            hud.canHarvestFly
-              ? 'h-9 w-9 scale-110'
-              : hud.combatStance
-                ? 'h-8 w-8 scale-105'
-                : hud.nearAnchorLabel || hud.canClosePattern
-                  ? 'h-7 w-7 scale-105'
-                  : 'h-6 w-6'
-          }`}
-          style={{
-            filter: 'drop-shadow(0 0 4px rgba(5, 10, 20, 0.92))',
-          }}
+          data-testid="hud-action-prompt"
+          className="fixed top-[122px] sm:top-5 left-1/2 -translate-x-1/2 max-w-[min(410px,92vw)] sm:max-w-[min(420px,38vw)] pointer-events-none"
         >
-          {/* Outer silk ring */}
-          <span
-            className={`absolute inset-0 rounded-full border-[1.5px] transition-colors duration-150 ${
-              hud.canHarvestFly
-                ? 'border-[#ffe58f] bg-[#ffe58f]/12'
-                : hud.combatStance
-                  ? 'border-[#86ffbc] bg-[#86ffbc]/10'
-                  : hud.nearAnchorLabel || hud.canClosePattern
-                    ? 'border-[#9effdb] bg-[#9effdb]/12'
-                    : 'border-[#dcecff]/80 bg-[#0b1526]/20'
-            }`}
-          />
-          {/* 4 fine spider-thread cardinal ticks */}
-          <span className="absolute -top-1.5 left-1/2 h-1.5 w-[1.5px] -translate-x-1/2 bg-[#e8f4ff]/90" />
-          <span className="absolute -bottom-1.5 left-1/2 h-1.5 w-[1.5px] -translate-x-1/2 bg-[#e8f4ff]/90" />
-          <span className="absolute -left-1.5 top-1/2 h-[1.5px] w-1.5 -translate-y-1/2 bg-[#e8f4ff]/90" />
-          <span className="absolute -right-1.5 top-1/2 h-[1.5px] w-1.5 -translate-y-1/2 bg-[#e8f4ff]/90" />
-          {/* Precision center bead */}
-          <span
-            className={`h-1.5 w-1.5 rounded-full transition-colors duration-150 ${
-              hud.canHarvestFly
-                ? 'bg-[#ffe58f]'
-                : hud.combatStance
-                  ? 'bg-[#7effb2]'
-                  : hud.nearAnchorLabel || hud.canClosePattern
-                    ? 'bg-[#9effdb]'
-                    : 'bg-white/95'
-            }`}
-          />
-        </div>
-      </div>
-
-      {/* Bottom Whisper & Pattern Selector Dock (leaves mobile thumbstick corners clear) */}
-      <div className="fixed bottom-28 sm:bottom-4 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 sm:gap-2 w-[min(720px,94vw)] pointer-events-none">
-        {/* Contextual Proximity Action Prompt */}
-        {(hud.nearAnchorLabel ||
-          hud.canHarvestFly ||
-          hud.canGrappleLabel ||
-          hud.activeThreadFromLabel) && (
           <div className="rounded bg-[#080d17]/88 px-3 py-1 sm:px-3.5 sm:py-1.5 text-[11px] sm:text-xs text-[#e6f2ff] border border-[#9ec5ff]/25 shadow-md text-center">
             {hud.canHarvestFly ? (
               <span>
@@ -430,20 +381,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </span>
             )}
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Narrative Whisper Line */}
-        {whisperText && (
-          <div className="max-w-xl text-center text-xs sm:text-sm italic text-[#d5e3f5] hud-text-stroke px-3 line-clamp-2">
+      {/* Narrative Whisper Card: bottom-left on desktop, high dark treetop sky on mobile so Pavutin stays 100% open */}
+      {whisperText && (
+        <div
+          data-testid="hud-whisper"
+          className="fixed top-[168px] sm:top-auto sm:bottom-5 left-2.5 sm:left-5 max-w-[min(340px,92vw)] sm:max-w-sm pointer-events-none"
+        >
+          <div className="rounded border border-[#9ec5ff]/18 bg-[#070b14]/78 px-2.5 py-1.5 sm:px-3.5 sm:py-2 text-[11px] sm:text-xs italic text-[#d5e3f5] shadow-[0_8px_22px_rgba(3,6,12,0.72)] line-clamp-2 sm:line-clamp-3">
             <span className="not-italic font-semibold text-[#9ec5ff]">
               {speakerLabel}:{' '}
             </span>
             {whisperText}
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Compact Pattern Weaving Dock */}
-        <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1 sm:gap-1.5 rounded border border-[#9ec5ff]/20 bg-[#080d17]/88 p-1 sm:p-1.5 shadow-[0_8px_24px_rgba(3,6,12,0.8)]">
+      {/* Pattern Weaving Dock: compact 2x2 top-right below buttons on mobile, bottom-right row on desktop */}
+      <div
+        data-testid="hud-pattern-dock"
+        className="fixed top-[44px] right-2.5 sm:top-auto sm:bottom-5 sm:right-5 flex flex-col items-end gap-1.5 max-w-[196px] sm:max-w-lg pointer-events-none"
+      >
+        <div className="pointer-events-auto grid grid-cols-2 sm:flex sm:flex-wrap items-center justify-end gap-1 sm:gap-1.5 rounded border border-[#9ec5ff]/20 bg-[#080d17]/88 p-1 sm:p-1.5 shadow-[0_8px_24px_rgba(3,6,12,0.8)]">
           {PATTERN_MODES.map((m) => {
             const active = hud.selectedMode === m.id;
             return (
@@ -455,7 +416,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   e.currentTarget.blur();
                   onSelectMode(m.id);
                 }}
-                className={`cursor-pointer rounded px-2 sm:px-3 py-1 sm:py-1.5 text-[11px] sm:text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                className={`cursor-pointer rounded px-1.5 sm:px-2.5 py-1 sm:py-1.5 text-[10px] sm:text-xs font-medium transition-colors whitespace-nowrap shrink-0 text-left sm:text-center ${
                   active
                     ? 'bg-[#253c61] text-white border border-[#9ec5ff]/55'
                     : 'text-[#a3b8d4] border border-transparent hover:text-white hover:bg-[#121d30]'
@@ -470,13 +431,13 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           })}
 
           {hud.hasGrapple && (
-            <div className="hidden sm:block px-2.5 py-1 text-xs text-[#9effdb] whitespace-nowrap shrink-0 border-l border-[#9ec5ff]/15">
+            <div className="hidden sm:block px-2 py-1 text-xs text-[#9effdb] whitespace-nowrap shrink-0 border-l border-[#9ec5ff]/15">
               [{grappleKey}] {t.grappleBtnLabel}
             </div>
           )}
         </div>
 
-        <div className="hidden sm:block rounded bg-[#070b12]/65 px-2.5 py-0.5 text-[11px] text-[#abc0df]">
+        <div className="hidden sm:block rounded bg-[#070b12]/72 px-2.5 py-0.5 text-[11px] text-[#abc0df] text-right">
           {t.patterns[hud.selectedMode].hint}
         </div>
       </div>

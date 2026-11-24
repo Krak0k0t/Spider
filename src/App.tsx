@@ -7,6 +7,7 @@ import { TouchControls } from './components/TouchControls';
 import { OrbWeaverEngine } from './game/engine';
 import { isRtlLanguage } from './game/i18n';
 import { loadUserSettings, saveUserSettings } from './game/settings';
+import { SOUNDTRACK_TRACKS } from './game/soundtrack';
 import type { HudSnapshot, PatternShape, UserSettings } from './game/types';
 
 function buildInitialHud(settings: UserSettings): HudSnapshot {
@@ -48,6 +49,11 @@ function buildInitialHud(settings: UserSettings): HudSnapshot {
     combatStance: false,
     canGrappleId: null,
     canGrappleLabel: null,
+    musicTrackIndex: 0,
+    musicTrackId: SOUNDTRACK_TRACKS[0].id,
+    musicIsPlaying: false,
+    musicPaused: false,
+    musicAvailableCount: 0,
     difficulty: settings.difficulty,
     graphics: settings.graphics,
     language: settings.language,
@@ -158,6 +164,19 @@ export default function App() {
     (mode: PatternShape) => engineRef.current?.setPatternMode(mode),
     [],
   );
+  const handleSelectTrack = useCallback(
+    (index: number) => engineRef.current?.selectMusicTrack(index),
+    [],
+  );
+  const handleNextTrack = useCallback(() => engineRef.current?.nextMusicTrack(), []);
+  const handlePrevTrack = useCallback(() => engineRef.current?.prevMusicTrack(), []);
+  const handleToggleMusic = useCallback(
+    () => engineRef.current?.toggleMusicPlayback(),
+    [],
+  );
+  const handleImportMusicFiles = useCallback((files: FileList) => {
+    void engineRef.current?.importCustomMusicFiles(files);
+  }, []);
 
   const handleTouchMove = useCallback((x: number, y: number) => {
     engineRef.current?.setTouchMove(x, y);
@@ -207,10 +226,15 @@ export default function App() {
           settings={settings}
           muted={hud.muted}
           isFullscreen={isFullscreen}
+          musicTrackIndex={hud.musicTrackIndex}
+          musicPaused={hud.musicPaused}
           onStart={handleStart}
           onToggleMute={handleToggleMute}
           onOpenSettings={() => setSettingsOpen(true)}
           onToggleFullscreen={handleToggleFullscreen}
+          onPrevTrack={handlePrevTrack}
+          onNextTrack={handleNextTrack}
+          onToggleMusic={handleToggleMusic}
         />
       )}
 
@@ -248,15 +272,26 @@ export default function App() {
         onTitle={handleTitle}
         onOpenSettings={() => setSettingsOpen(true)}
         onToggleFullscreen={handleToggleFullscreen}
+        onPrevTrack={handlePrevTrack}
+        onNextTrack={handleNextTrack}
+        onToggleMusic={handleToggleMusic}
       />
 
       <SettingsModal
         open={settingsOpen}
         settings={settings}
         isFullscreen={isFullscreen}
+        musicTrackIndex={hud.musicTrackIndex}
+        musicPaused={hud.musicPaused}
+        musicAvailableCount={hud.musicAvailableCount}
         onChange={setSettings}
         onClose={() => setSettingsOpen(false)}
         onToggleFullscreen={handleToggleFullscreen}
+        onSelectTrack={handleSelectTrack}
+        onPrevTrack={handlePrevTrack}
+        onNextTrack={handleNextTrack}
+        onToggleMusic={handleToggleMusic}
+        onImportMusicFiles={handleImportMusicFiles}
       />
     </main>
   );

@@ -23,6 +23,12 @@ import {
   matchesBinding,
   rebindActionSlot,
 } from './settings';
+import {
+  getNextCarouselIndex,
+  getPrevCarouselIndex,
+  getTrackDisplay,
+  SOUNDTRACK_TRACKS,
+} from './soundtrack';
 import type { ObstacleCollider, SilkStrand } from './types';
 
 test('classifyPattern distinguishes triangle, star, circle, and decoy', () => {
@@ -287,6 +293,37 @@ test('combat stance activates automatically near grounded flies and macro focus 
   assert.equal(computeLodStage(9, 15, 23), 0);
   assert.equal(computeLodStage(17, 15, 23), 1);
   assert.equal(computeLodStage(25, 15, 23), 2);
+});
+
+test('soundtrack carousel covers all 7 requested tracks with evocative titles and wraps cleanly', () => {
+  const expectedFiles = [
+    'Meditation.ogg',
+    'The Night Is Their Ally.ogg',
+    'Conflict of the Soul.ogg',
+    'The Weight of the Hammer.ogg',
+    'Pain Is Everything.ogg',
+    'Our Last Dance.ogg',
+    'The Last Stand of Heroes.ogg',
+  ];
+  assert.equal(SOUNDTRACK_TRACKS.length, 7);
+  for (const file of expectedFiles) {
+    assert.ok(
+      SOUNDTRACK_TRACKS.some((t) => t.file === file),
+      `Missing expected track ${file}`,
+    );
+  }
+  for (const t of SOUNDTRACK_TRACKS) {
+    assert.ok(t.fallbackFile.endsWith('.ogg'));
+    assert.ok(t.fallbackUrl.startsWith('/music/ambient/'));
+    const ru = getTrackDisplay(t, 'ru');
+    const en = getTrackDisplay(t, 'en');
+    assert.ok(ru.title.length > 0 && ru.mood.length > 0);
+    assert.ok(en.title.length > 0 && en.mood.length > 0);
+  }
+  assert.equal(getNextCarouselIndex(6), 0);
+  assert.equal(getPrevCarouselIndex(0), 6);
+  assert.equal(getNextCarouselIndex(2), 3);
+  assert.equal(getPrevCarouselIndex(2), 1);
 });
 
 

@@ -1,28 +1,41 @@
 import React from 'react';
 import { getTranslations, isRtlLanguage } from '../game/i18n';
+import { getTrackDisplay, SOUNDTRACK_TRACKS } from '../game/soundtrack';
 import type { UserSettings } from '../game/types';
 
 interface TitleOverlayProps {
   settings: UserSettings;
   muted: boolean;
   isFullscreen: boolean;
+  musicTrackIndex: number;
+  musicPaused: boolean;
   onStart: () => void;
   onToggleMute: () => void;
   onOpenSettings: () => void;
   onToggleFullscreen: () => void;
+  onPrevTrack: () => void;
+  onNextTrack: () => void;
+  onToggleMusic: () => void;
 }
 
 export const TitleOverlay: React.FC<TitleOverlayProps> = ({
   settings,
   muted,
   isFullscreen,
+  musicTrackIndex,
+  musicPaused,
   onStart,
   onToggleMute,
   onOpenSettings,
   onToggleFullscreen,
+  onPrevTrack,
+  onNextTrack,
+  onToggleMusic,
 }) => {
   const t = getTranslations(settings.language);
   const rtl = isRtlLanguage(settings.language);
+  const track = SOUNDTRACK_TRACKS[musicTrackIndex] || SOUNDTRACK_TRACKS[0];
+  const display = getTrackDisplay(track, settings.language);
 
   return (
     <div
@@ -157,6 +170,75 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
           >
             {t.settingsBtn}
           </button>
+        </div>
+
+        {/* Muffled Nocturnal Soundtrack Carousel Widget */}
+        <div
+          data-testid="title-music-carousel"
+          className="mt-6 max-w-md rounded border border-[#9ec5ff]/22 bg-[#080f1c]/82 px-3.5 py-2.5 shadow-[0_10px_24px_rgba(3,6,12,0.7)]"
+        >
+          <div className="flex items-center justify-between gap-2 text-[10px] tracking-[0.14em] text-[#84a9d8] uppercase">
+            <span>{t.musicCarouselBadge}</span>
+            <span className="font-mono-num text-[#a6c8f5]">
+              {musicTrackIndex + 1}/{SOUNDTRACK_TRACKS.length}
+            </span>
+          </div>
+
+          <div className="mt-1.5 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-[#eaf3ff]">
+                {display.title}
+              </div>
+              <div className="truncate text-[11px] text-[#95add0]">
+                {display.mood} · <span className="font-mono-num text-[#7492ba]">{track.file}</span>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                data-testid="music-prev-btn"
+                aria-label={t.musicPrevBtn}
+                title={t.musicPrevBtn}
+                onClick={onPrevTrack}
+                className="flex h-8 w-8 cursor-pointer items-center justify-center rounded border border-[#9ec5ff]/25 bg-[#101c30] text-[#cfe2ff] transition-colors hover:border-[#9ec5ff]/60 hover:text-white"
+              >
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
+                  <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                data-testid="music-toggle-btn"
+                aria-label={musicPaused ? t.musicPlayBtn : t.musicPauseBtn}
+                title={musicPaused ? t.musicPlayBtn : t.musicPauseBtn}
+                onClick={onToggleMusic}
+                className="flex h-8 w-8 cursor-pointer items-center justify-center rounded border border-[#9ec5ff]/35 bg-[#192b48] text-[#eef6ff] transition-colors hover:border-[#9ec5ff]/70"
+              >
+                {musicPaused ? (
+                  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                  </svg>
+                )}
+              </button>
+              <button
+                type="button"
+                data-testid="music-next-btn"
+                aria-label={t.musicNextBtn}
+                title={t.musicNextBtn}
+                onClick={onNextTrack}
+                className="flex h-8 w-8 cursor-pointer items-center justify-center rounded border border-[#9ec5ff]/25 bg-[#101c30] text-[#cfe2ff] transition-colors hover:border-[#9ec5ff]/60 hover:text-white"
+              >
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
+                  <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

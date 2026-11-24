@@ -92,6 +92,9 @@ const _camTarget = new THREE.Vector3();
 const _camDesired = new THREE.Vector3();
 const _lookTarget = new THREE.Vector3();
 const _dummy = new THREE.Object3D();
+const _upAxis = new THREE.Vector3(0, 1, 0);
+const _quat = new THREE.Quaternion();
+const _lastLodCamPos = new THREE.Vector3(999, 999, 999);
 
 const MysticalColorGradeShader = {
   uniforms: {
@@ -224,7 +227,9 @@ export class OrbWeaverEngine {
   private world!: ForestWorldHandle;
   private pavutin!: PavutinRig;
   private wasp!: WaspRig;
-  private sound = new SoundEngine();
+  private sound = new SoundEngine(() => {
+    if (!this.disposed) this.pushHud(true);
+  });
 
   private screen: GameScreenState = 'title';
   private outcome: GameOutcome = null;
@@ -264,6 +269,8 @@ export class OrbWeaverEngine {
 
   private camYaw = 0;
   private camPitch = 0.22;
+  private camDist = 5.4;
+  private camDistTarget = 5.4;
   private camPos = new THREE.Vector3(0.4, 2.2, 7.6);
   private camLook = new THREE.Vector3(0.2, 1.4, -4.5);
   private draggingCam = false;
@@ -283,8 +290,10 @@ export class OrbWeaverEngine {
   private windStrength = 0.14;
 
   private activeThreadFrom: AnchorNode | null = null;
-  private previewLine!: THREE.Line;
-  private previewGeo!: THREE.BufferGeometry;
+  private trailingFilamentMesh!: THREE.Mesh;
+  private targetSporesGroup!: THREE.Group;
+  private targetSporeGeo!: THREE.BufferGeometry;
+  private targetSporeMat!: THREE.MeshStandardMaterial;
 
   private strands: SilkStrand[] = [];
   private patterns: WovenPattern[] = [];
@@ -324,6 +333,11 @@ export class OrbWeaverEngine {
   private resizeObserver: ResizeObserver | null = null;
   private disposableWebGeos: THREE.BufferGeometry[] = [];
   private disposableWebMats: THREE.Material[] = [];
+  private webPulseEntries: {
+    mat: THREE.MeshPhysicalMaterial;
+    baseEmissive: number;
+    phase: number;
+  }[] = [];
 
   constructor(
     container: HTMLElement,
@@ -422,7 +436,7 @@ export class OrbWeaverEngine {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
     this.ssaoPass = new SSAOPass(this.scene, this.camera, w, h, 16);
-    this.ssaoPass.kernelRadius = 5.5;
+    this.ssaoPass.kernelRadius = 4.2;
     this.ssaoPass.minDistance = 0.004;
     this.ssaoPass.maxDistance = 0.07;
     this.ssaoPass.enabled = false;
@@ -463,20 +477,36 @@ export class OrbWeaverEngine {
     this.wasp.root.visible = false;
     this.scene.add(this.wasp.root);
 
-    this.previewGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(),
-      new THREE.Vector3(),
-    ]);
-    const previewMat = new THREE.LineDashedMaterial({
-      color: 0xbfe0ff,
-      dashSize: 0.25,
-      gapSize: 0.12,
+    this.trailingFilamentMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0075, 0.0055, 1, 6),
+      new THREE.MeshStandardMaterial({
+        color: 0xeaf4ff,
+        emissive: 0x7ac2ff,
+        emissiveIntensity: 0.72,
+        transparent: true,
+        opacity: 0.78,
+        roughness: 0.14,
+      }),
+    );
+    this.trailingFilamentMesh.visible = false;
+    this.scene.add(this.trailingFilamentMesh);
+
+    this.targetSporesGroup = new THREE.Group();
+    this.targetSporeGeo = new THREE.SphereGeometry(0.022, 6, 6);
+    this.targetSporeMat = new THREE.MeshStandardMaterial({
+      color: 0xf4fff9,
+      emissive: 0x9effdb,
+      emissiveIntensity: 1.05,
       transparent: true,
-      opacity: 0.88,
+      opacity: 0.85,
+      roughness: 0.2,
     });
-    this.previewLine = new THREE.Line(this.previewGeo, previewMat);
-    this.previewLine.visible = false;
-    this.scene.add(this.previewLine);
+    for (let s = 0; s < 3; s++) {
+      const spore = new THREE.Mesh(this.targetSporeGeo, this.targetSporeMat);
+      this.targetSporesGroup.add(spore);
+    }
+    this.targetSporesGroup.visible = false;
+    this.scene.add(this.targetSporesGroup);
 
     const moteCount = 140;
     const moteGeo = new THREE.SphereGeometry(0.052, 6, 6);
@@ -583,12 +613,12 @@ export class OrbWeaverEngine {
     if (!this.isSoftwareGl) {
       const dprCap =
         quality === 'low'
-          ? 1.0
+          ? 0.95
           : quality === 'medium'
-            ? 1.35
+            ? 1.25
             : quality === 'high'
-              ? 1.75
-              : Math.min(window.devicePixelRatio, 2.0);
+              ? 1.5
+              : 1.85;
       const pr = Math.min(window.devicePixelRatio, dprCap);
       this.renderer.setPixelRatio(pr);
       this.renderer.shadowMap.enabled = quality !== 'low';
@@ -601,17 +631,17 @@ export class OrbWeaverEngine {
       }
       if (this.composer && this.bloomPass) {
         this.composer.setPixelRatio(pr);
-        this.ssaoPass.enabled = quality === 'high' || quality === 'ultra';
+        this.ssaoPass.enabled = quality === 'ultra';
         this.bloomPass.enabled = quality !== 'low';
         this.bloomPass.strength =
           quality === 'medium' ? 0.22 : quality === 'high' ? 0.36 : 0.48;
-        this.bokehPass.enabled = quality === 'high' || quality === 'ultra';
+        this.bokehPass.enabled = quality === 'ultra';
         const bokehUniforms = this.bokehPass.uniforms as Record<string, THREE.IUniform>;
         if (bokehUniforms['aperture']) {
-          bokehUniforms['aperture'].value = quality === 'ultra' ? 0.0005 : 0.00034;
+          bokehUniforms['aperture'].value = 0.00046;
         }
         if (bokehUniforms['maxblur']) {
-          bokehUniforms['maxblur'].value = quality === 'ultra' ? 0.007 : 0.0046;
+          bokehUniforms['maxblur'].value = 0.0062;
         }
         this.gradePass.enabled = quality !== 'low';
         (this.gradePass.uniforms.uVignetteStrength as { value: number }).value =
@@ -682,6 +712,7 @@ export class OrbWeaverEngine {
     dom.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
+    dom.addEventListener('wheel', this.onWheel, { passive: false });
     dom.addEventListener('contextmenu', this.onContextMenu);
   }
 
@@ -781,6 +812,16 @@ export class OrbWeaverEngine {
     );
   };
 
+  private onWheel = (e: WheelEvent) => {
+    if (this.inputSuspended || this.screen !== 'playing') return;
+    e.preventDefault();
+    this.camDistTarget = THREE.MathUtils.clamp(
+      this.camDistTarget + Math.sign(e.deltaY) * 0.42,
+      3.0,
+      8.2,
+    );
+  };
+
   private onPointerUp = (e: PointerEvent) => {
     const mCode = mouseButtonToCode(e.button);
     if (mCode) {
@@ -835,6 +876,11 @@ export class OrbWeaverEngine {
         else if (code === 'Digit2') this.setPatternMode('star');
         else if (code === 'Digit3') this.setPatternMode('circle');
         else if (code === 'Digit4') this.setPatternMode('decoy');
+        else if (code === 'Backspace' && this.activeThreadFrom) {
+          this.activeThreadFrom = null;
+          this.trailingFilamentMesh.visible = false;
+          this.pushHud(true);
+        }
       }
     }
 
@@ -918,6 +964,32 @@ export class OrbWeaverEngine {
     this.pushHud(true);
   }
 
+  public selectMusicTrack(index: number): void {
+    this.sound.selectTrack(index, true);
+    this.pushHud(true);
+  }
+
+  public nextMusicTrack(): void {
+    this.sound.nextTrack();
+    this.pushHud(true);
+  }
+
+  public prevMusicTrack(): void {
+    this.sound.prevTrack();
+    this.pushHud(true);
+  }
+
+  public toggleMusicPlayback(): void {
+    this.sound.toggleMusicPlayback();
+    this.pushHud(true);
+  }
+
+  public async importCustomMusicFiles(files: FileList | File[]): Promise<number> {
+    const count = await this.sound.importCustomMusicFiles(files);
+    this.pushHud(true);
+    return count;
+  }
+
   public setPatternMode(mode: PatternShape): void {
     this.selectedMode = mode;
     this.pushHud(true);
@@ -930,6 +1002,7 @@ export class OrbWeaverEngine {
     this.disposableWebMats.forEach((m) => m.dispose());
     this.disposableWebGeos = [];
     this.disposableWebMats = [];
+    this.webPulseEntries = [];
 
     this.flies.forEach((f) => this.scene.remove(f.rig.root));
     this.flies = [];
@@ -937,7 +1010,8 @@ export class OrbWeaverEngine {
     this.strands = [];
     this.patterns = [];
     this.activeThreadFrom = null;
-    this.previewLine.visible = false;
+    this.trailingFilamentMesh.visible = false;
+    this.targetSporesGroup.visible = false;
 
     const diffCfg = DIFFICULTY_CONFIGS[this.settings.difficulty];
     this.screen = targetScreen;
@@ -968,6 +1042,8 @@ export class OrbWeaverEngine {
     this.nearestFlyCaught = false;
     this.camYaw = 0;
     this.camPitch = 0.22;
+    this.camDist = 5.4;
+    this.camDistTarget = 5.4;
     this.camPos.set(0.4, 2.15, 7.6);
     this.camLook.set(0.2, 1.4, -4.5);
     this.knockbackVel.set(0, 0, 0);
@@ -988,8 +1064,8 @@ export class OrbWeaverEngine {
     this.victoryDelayTimer = -1;
     this.elapsedSeconds = 0;
 
-    (this.world.greatFrameBeam.material as THREE.MeshStandardMaterial).opacity = 0;
-    (this.world.greatFrameHalo.material as THREE.MeshStandardMaterial).opacity = 0.18;
+    this.world.sacredFrameLight.intensity = 0.85;
+    (this.world.greatFrameGlade.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.08;
     (this.world.uspokhLeafShadow.material as THREE.MeshStandardMaterial).opacity = 0;
 
     this.setWhisper('pavutin', 'prologue_intro', undefined, 8);
@@ -1014,7 +1090,7 @@ export class OrbWeaverEngine {
     this.pushHud(true);
   }
 
-  private findNearestAnchor(maxDist = 3.4): AnchorNode | null {
+  private findNearestAnchor(maxDist = 3.75): AnchorNode | null {
     let best: AnchorNode | null = null;
     let bestD = maxDist;
     for (const a of this.world.anchors) {
@@ -1069,7 +1145,7 @@ export class OrbWeaverEngine {
     if (this.screen !== 'playing') return;
     if (this.tryHarvestNearbyFly()) return;
 
-    const near = this.findNearestAnchor(3.4);
+    const near = this.findNearestAnchor(3.75);
     if (!near) {
       this.setWhisper('pavutin', 'approach_twig', undefined, 3);
       return;
@@ -1096,7 +1172,7 @@ export class OrbWeaverEngine {
 
     if (this.activeThreadFrom.id === near.id) {
       this.activeThreadFrom = null;
-      this.previewLine.visible = false;
+      this.trailingFilamentMesh.visible = false;
       this.pushHud(true);
       return;
     }
@@ -1135,7 +1211,7 @@ export class OrbWeaverEngine {
         this.sound.playSnapWarning();
         this.trauma = Math.min(1, this.trauma + 0.35);
         this.activeThreadFrom = null;
-        this.previewLine.visible = false;
+        this.trailingFilamentMesh.visible = false;
         this.setWhisper(
           'uspokh',
           zone === 'stump' ? 'hollow_need_grapple' : 'birch_wind_snap',
@@ -1189,7 +1265,7 @@ export class OrbWeaverEngine {
     if (loopNodes && loopNodes.length >= 3) {
       this.completePatternFromLoop(loopNodes);
       this.activeThreadFrom = null;
-      this.previewLine.visible = false;
+      this.trailingFilamentMesh.visible = false;
     } else {
       this.activeThreadFrom = to;
     }
@@ -1323,8 +1399,8 @@ export class OrbWeaverEngine {
     this.wasp.root.visible = false;
     this.moonRestored = 1.0;
     this.textures.updateMoonStitch(1.0);
-    (this.world.greatFrameBeam.material as THREE.MeshStandardMaterial).opacity = 0.34;
-    (this.world.greatFrameHalo.material as THREE.MeshStandardMaterial).opacity = 0.65;
+    this.world.sacredFrameLight.intensity = 3.2;
+    (this.world.greatFrameGlade.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.55;
     this.sound.playLunarTriumph();
     this.burstMotes(new THREE.Vector3(0, 2.2, -13.5), 40, 0.45);
     this.setWhisper('moon', 'great_victory', undefined, 6);
@@ -1335,7 +1411,7 @@ export class OrbWeaverEngine {
   public tryHarvestNearbyFly(): boolean {
     if (this.screen !== 'playing') return false;
     let bestIdx = -1;
-    let bestD = 2.6;
+    let bestD = 3.0;
     for (let i = 0; i < this.flies.length; i++) {
       const d = this.flies[i].pos.distanceTo(this.spiderPos);
       if (d < bestD) {
@@ -1355,9 +1431,18 @@ export class OrbWeaverEngine {
     this.caughtSpecies[fly.species]++;
     this.composure = Math.min(this.maxComposure, this.composure + 1);
 
+    // Quick predatory lunge snap toward caught fly
+    _v1.subVectors(fly.pos, this.spiderPos).setY(0);
+    if (_v1.lengthSq() > 0.04) {
+      this.spiderYaw = Math.atan2(_v1.x, _v1.z);
+      _v1.normalize().multiplyScalar(2.8);
+      this.knockbackVel.copy(_v1);
+    }
+    this.spiderSquashY = 1.2;
+
     this.sound.playFlyCapture();
     this.hitstopTimer = 0.035;
-    this.burstMotes(fly.pos, 12, 0.25);
+    this.burstMotes(fly.pos, 14, 0.28);
 
     this.scene.remove(fly.rig.root);
     this.flies.splice(bestIdx, 1);
@@ -1425,6 +1510,11 @@ export class OrbWeaverEngine {
     this.webMeshes.push(mesh);
     this.disposableWebGeos.push(geo);
     this.disposableWebMats.push(mat);
+    this.webPulseEntries.push({
+      mat,
+      baseEmissive: mat.emissiveIntensity,
+      phase: this.webPulseEntries.length * 0.85,
+    });
   }
 
   private createClosedWebMesh(positions: Vec3[], shape: PatternShape): void {
@@ -1529,6 +1619,11 @@ export class OrbWeaverEngine {
     this.webMeshes.push(webGroup);
     this.disposableWebGeos.push(strandGeo, dewGeo);
     this.disposableWebMats.push(strandMat, dewMat);
+    const phase = this.webPulseEntries.length * 0.7;
+    this.webPulseEntries.push(
+      { mat: strandMat, baseEmissive: strandMat.emissiveIntensity, phase },
+      { mat: dewMat, baseEmissive: dewMat.emissiveIntensity, phase: phase + 0.5 },
+    );
   }
 
   private spawnAmbientFly(species: FlySpecies, pos: THREE.Vector3): void {
@@ -1594,39 +1689,30 @@ export class OrbWeaverEngine {
         this.stepSimulation(dt, elapsed);
       }
       this.updateGameplayCamera(dt);
-      this.sound.updateAdaptiveMusic(dt, {
+      this.sound.updateAmbience({
         active: true,
         isTitle: false,
         zone: this.currentZone,
-        chapter: this.chapter,
-        waspState: this.waspState,
-        fear: this.fear,
+        isGusty: this.weather === 'gusty',
         hiddenInNettle: this.hiddenInNettle,
-        weather: this.weather,
       });
     } else if (this.screen === 'title') {
       this.stepAmbientVisuals(dt, elapsed);
       this.updateTitleCamera(elapsed);
-      this.sound.updateAdaptiveMusic(dt, {
+      this.sound.updateAmbience({
         active: true,
         isTitle: true,
         zone: 'log',
-        chapter: 'prologue',
-        waspState: 'absent',
-        fear: 0,
+        isGusty: false,
         hiddenInNettle: false,
-        weather: 'calm',
       });
     } else {
-      this.sound.updateAdaptiveMusic(dt, {
+      this.sound.updateAmbience({
         active: false,
         isTitle: false,
         zone: this.currentZone,
-        chapter: this.chapter,
-        waspState: this.waspState,
-        fear: this.fear,
-        hiddenInNettle: this.hiddenInNettle,
-        weather: this.weather,
+        isGusty: false,
+        hiddenInNettle: false,
       });
     }
 
@@ -1655,14 +1741,26 @@ export class OrbWeaverEngine {
     );
     this.world.pondFireflyLight.position.copy(this.world.pondFireflyPositions[0]);
     this.world.pondFireflyLight.intensity = 2.1 + Math.sin(elapsed * 2.4) * 0.55;
+    this.world.pantryLight.intensity =
+      2.15 + Math.sin(elapsed * 3.1) * 0.14 + Math.cos(elapsed * 5.7) * 0.08;
+
+    const gustBoost = this.weather === 'gusty' ? 0.24 : 0.1;
+    for (let i = 0; i < this.webPulseEntries.length; i++) {
+      const entry = this.webPulseEntries[i];
+      entry.mat.emissiveIntensity =
+        entry.baseEmissive + Math.sin(elapsed * 2.15 + entry.phase) * gustBoost;
+    }
 
     const mistMat = this.world.mistInstances.material as THREE.MeshStandardMaterial;
     mistMat.opacity = 0.2 + Math.sin(elapsed * 0.55) * 0.035;
     this.animateUspokh(elapsed);
     this.updateMotes(dt, elapsed);
 
-    for (let i = 0; i < this.world.lodRocks.length; i++) {
-      this.world.lodRocks[i].update(this.camera);
+    if (_lastLodCamPos.distanceToSquared(this.camera.position) > 0.06) {
+      _lastLodCamPos.copy(this.camera.position);
+      for (let i = 0; i < this.world.lodRocks.length; i++) {
+        this.world.lodRocks[i].update(this.camera);
+      }
     }
 
     if (this.bokehPass.enabled) {
@@ -1965,17 +2063,16 @@ export class OrbWeaverEngine {
     // 7. Animate Pavutin 8-leg rig + squash/stretch + automatic hunting stance
     this.animatePavutin(dt, elapsed, isMoving);
 
-    // 8. Preview line & timers
-    this.updatePreviewLine(elapsed, fearState.aimScatterRad);
+    // 8. Targeting spores & trailing spinneret filament
+    this.updateTargetingVisuals(elapsed);
     if (this.whisperTimer > 0) this.whisperTimer -= dt;
     this.trauma = Math.max(0, this.trauma - dt * 1.4);
 
-    // 9. Animate dewdrop anchors
+    // 9. Gentle pulse on active twig dewdrop
     this.world.anchorMeshes.forEach((mesh, id) => {
       const isActive = this.activeThreadFrom?.id === id;
-      const scale = isActive ? 1.45 + Math.sin(elapsed * 6) * 0.15 : 1.0;
-      mesh.scale.setScalar(scale);
-      mesh.rotation.y = elapsed * 0.9;
+      const scale = isActive ? 1.32 + Math.sin(elapsed * 5) * 0.14 : 1.0;
+      mesh.scale.set(0.88 * scale, 1.32 * scale, 0.88 * scale);
     });
 
     if (elapsed - this.lastHudPush > 0.1) {
@@ -2010,7 +2107,7 @@ export class OrbWeaverEngine {
     this.trauma = 0.8;
     this.composure = Math.max(0, this.composure - 1);
     this.activeThreadFrom = null;
-    this.previewLine.visible = false;
+    this.trailingFilamentMesh.visible = false;
     this.sound.playSnapWarning();
 
     _v1
@@ -2118,9 +2215,6 @@ export class OrbWeaverEngine {
     const gy = groundHeightAt(this.waspPos.x, this.waspPos.z);
     const hAbove = this.waspPos.y - gy;
     this.wasp.shadowDisc.position.set(0, -hAbove + 0.03, 0);
-    this.wasp.auraDisc.position.set(0, -hAbove + 0.04, 0);
-    (this.wasp.auraDisc.material as THREE.MeshStandardMaterial).opacity =
-      this.waspState === 'investigate' || this.waspState === 'dive' ? 0.42 : 0.18;
   }
 
   private stepFlies(dt: number, elapsed: number): void {
@@ -2311,21 +2405,19 @@ export class OrbWeaverEngine {
       }
     }
 
-    const palpWave = Math.sin(elapsed * (3.4 + combat * 7.5)) * (0.14 + combat * 0.12);
-    this.pavutin.pedipalps[0].rotation.x = palpWave - combat * 0.28;
-    this.pavutin.pedipalps[1].rotation.x = -palpWave - combat * 0.28;
+    const nearInteract =
+      this.screen === 'playing' && !isMoving && this.findNearestAnchor(3.4) !== null ? 0.55 : 0;
+    const palpSpeed = 3.4 + combat * 7.5 + nearInteract * 2.5;
+    const palpAmp = 0.14 + combat * 0.12 + nearInteract * 0.06;
+    const palpWave = Math.sin(elapsed * palpSpeed) * palpAmp;
+    this.pavutin.pedipalps[0].rotation.x = palpWave - combat * 0.28 - nearInteract * 0.12;
+    this.pavutin.pedipalps[1].rotation.x = -palpWave - combat * 0.28 - nearInteract * 0.12;
     this.pavutin.pedipalps[0].rotation.y = -combat * 0.24;
     this.pavutin.pedipalps[1].rotation.y = combat * 0.24;
     this.pavutin.chelicerae[0].rotation.z =
       Math.sin(elapsed * 2.2) * 0.06 - combat * 0.18;
     this.pavutin.chelicerae[1].rotation.z =
       -Math.sin(elapsed * 2.2) * 0.06 + combat * 0.18;
-
-    if (this.pavutin.berriesGroup) {
-      this.pavutin.berriesGroup.rotation.x =
-        Math.sin(elapsed * 2.5) * 0.05 + combat * 0.16;
-      this.pavutin.berriesGroup.rotation.z = Math.cos(elapsed * 1.9) * 0.04;
-    }
 
     // Ground contact shadow shrinks gently when spider leaps high
     const groundY = this.surfaceHeightAt(this.spiderPos.x, this.spiderPos.z);
@@ -2338,28 +2430,55 @@ export class OrbWeaverEngine {
     this.pavutin.silkGlowMat.emissiveIntensity = 0.28 + silkRatio * 1.2 + combat * 0.45;
   }
 
-  private updatePreviewLine(elapsed: number, aimScatterRad: number): void {
+  private updateTargetingVisuals(elapsed: number): void {
+    const near = this.findNearestAnchor(3.75);
+    const nearFly = this.flies.find((f) => f.pos.distanceTo(this.spiderPos) < 3.0);
+
+    // Subtle organic firefly-pollen spores drifting gently near interactable fly or twig fork
+    if (this.screen === 'playing' && nearFly) {
+      this.targetSporesGroup.visible = true;
+      this.targetSporesGroup.position.copy(nearFly.pos);
+      this.targetSporeMat.emissive.setHex(0xffe58f);
+      this.targetSporesGroup.children.forEach((child, idx) => {
+        const a = elapsed * 2.6 + idx * ((Math.PI * 2) / 3);
+        child.position.set(Math.cos(a) * 0.24, Math.sin(elapsed * 3.4 + idx) * 0.09, Math.sin(a) * 0.24);
+      });
+    } else if (this.screen === 'playing' && near && near.id !== this.activeThreadFrom?.id) {
+      this.targetSporesGroup.visible = true;
+      this.targetSporesGroup.position.set(near.position.x, near.position.y + 0.05, near.position.z);
+      this.targetSporeMat.emissive.setHex(0x9effdb);
+      this.targetSporesGroup.children.forEach((child, idx) => {
+        const a = elapsed * 1.9 + idx * ((Math.PI * 2) / 3);
+        child.position.set(Math.cos(a) * 0.2, Math.sin(elapsed * 2.5 + idx) * 0.08, Math.sin(a) * 0.2);
+      });
+    } else {
+      this.targetSporesGroup.visible = false;
+    }
+
     const from = this.activeThreadFrom;
     if (!from) {
-      this.previewLine.visible = false;
+      this.trailingFilamentMesh.visible = false;
       return;
     }
-    this.previewLine.visible = true;
-    const near = this.findNearestAnchor(3.4);
-    const targetPos =
-      near && near.id !== from.id
-        ? near.position
-        : {
-            x: this.spiderPos.x + Math.sin(elapsed * 22) * aimScatterRad * 1.8,
-            y: this.spiderPos.y + 0.3,
-            z: this.spiderPos.z + Math.cos(elapsed * 22) * aimScatterRad * 1.8,
-          };
 
-    const posAttr = this.previewGeo.attributes.position as THREE.BufferAttribute;
-    posAttr.setXYZ(0, from.position.x, from.position.y, from.position.z);
-    posAttr.setXYZ(1, targetPos.x, targetPos.y, targetPos.z);
-    posAttr.needsUpdate = true;
-    this.previewLine.computeLineDistances();
+    // Delicate 3D trailing silk filament from anchor twig straight to Pavutin's spinneret
+    _v1.set(from.position.x, from.position.y, from.position.z);
+    _v2.set(
+      this.spiderPos.x - Math.sin(this.spiderYaw) * 0.42,
+      this.spiderPos.y + 0.24,
+      this.spiderPos.z - Math.cos(this.spiderYaw) * 0.42,
+    );
+    const dist = _v1.distanceTo(_v2);
+    if (dist > 0.12) {
+      this.trailingFilamentMesh.visible = true;
+      this.trailingFilamentMesh.position.copy(_v1).lerp(_v2, 0.5);
+      _v2.sub(_v1).normalize();
+      _quat.setFromUnitVectors(_upAxis, _v2);
+      this.trailingFilamentMesh.quaternion.copy(_quat);
+      this.trailingFilamentMesh.scale.set(1, dist, 1);
+    } else {
+      this.trailingFilamentMesh.visible = false;
+    }
   }
 
   private animateUspokh(elapsed: number): void {
@@ -2401,7 +2520,8 @@ export class OrbWeaverEngine {
   }
 
   private updateGameplayCamera(dt: number): void {
-    const dist = 5.4;
+    this.camDist = THREE.MathUtils.damp(this.camDist, this.camDistTarget, 8.5, dt);
+    const dist = this.camDist;
     const horiz = Math.cos(this.camPitch) * dist;
     const vert = Math.sin(this.camPitch) * dist + 0.72;
 
@@ -2465,9 +2585,11 @@ export class OrbWeaverEngine {
           if (m.pos.z > 3.6) m.pos.z = -4.6;
           if (m.pos.z < -4.8) m.pos.z = 3.4;
         } else {
-          m.pos.x += (m.vel.x + Math.sin(elapsed + i) * 0.12) * dt;
+          const gustLateral =
+            this.weather === 'gusty' ? 0.9 + this.windStrength * 1.35 : this.windStrength * 0.3;
+          m.pos.x += (m.vel.x + gustLateral + Math.sin(elapsed + i) * 0.14) * dt;
           m.pos.y += Math.sin(elapsed * 0.9 + i * 0.5) * 0.18 * dt;
-          m.pos.z += m.vel.z * dt;
+          m.pos.z += (m.vel.z + gustLateral * 0.25) * dt;
           if (m.pos.x > 18) m.pos.x = -18;
           if (m.pos.x < -18) m.pos.x = 18;
           if (m.pos.z > 14) m.pos.z = -18;
@@ -2496,7 +2618,7 @@ export class OrbWeaverEngine {
     this.lastHudPush = this.simElapsed;
     if (!force && this.disposed) return;
 
-    const nearAnchor = this.findNearestAnchor(3.4);
+    const nearAnchor = this.findNearestAnchor(3.75);
     const grappleTarget = this.findNearestGrappleAnchor();
     const canClose = Boolean(
       this.activeThreadFrom &&
@@ -2505,8 +2627,9 @@ export class OrbWeaverEngine {
         this.findClosedLoop(nearAnchor.id, this.activeThreadFrom.id),
     );
     const canHarvestFly = this.flies.some(
-      (f) => f.pos.distanceTo(this.spiderPos) < 2.6,
+      (f) => f.pos.distanceTo(this.spiderPos) < 3.0,
     );
+    const music = this.sound.getMusicStatus();
 
     const bearingStrands = this.strands.filter((s) => s.isBearing);
     const hasAnchorDone = (id: string) =>
@@ -2555,6 +2678,11 @@ export class OrbWeaverEngine {
       combatStance: this.combatStanceBlend > 0.2,
       canGrappleId: grappleTarget ? grappleTarget.id : null,
       canGrappleLabel: grappleTarget ? grappleTarget.label : null,
+      musicTrackIndex: music.trackIndex,
+      musicTrackId: music.trackId,
+      musicIsPlaying: music.isPlaying,
+      musicPaused: music.paused,
+      musicAvailableCount: music.availableCount,
       difficulty: this.settings.difficulty,
       graphics: this.settings.graphics,
       language: this.settings.language,
@@ -2574,10 +2702,18 @@ export class OrbWeaverEngine {
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
+    this.renderer.domElement.removeEventListener('wheel', this.onWheel);
     this.renderer.domElement.removeEventListener('contextmenu', this.onContextMenu);
 
     this.disposableWebGeos.forEach((g) => g.dispose());
     this.disposableWebMats.forEach((m) => m.dispose());
+    this.webPulseEntries = [];
+    this.trailingFilamentMesh.geometry.dispose();
+    (this.trailingFilamentMesh.material as THREE.Material).dispose();
+    this.targetSporeGeo.dispose();
+    this.targetSporeMat.dispose();
+    this.motesMesh.geometry.dispose();
+    (this.motesMesh.material as THREE.Material).dispose();
     this.world.dispose();
     this.textures.dispose();
     this.sound.dispose();

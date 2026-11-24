@@ -212,6 +212,11 @@ export interface HudSnapshot {
   combatStance: boolean;
   canGrappleId: string | null;
   canGrappleLabel: string | null;
+  musicTrackIndex: number;
+  musicTrackId: string;
+  musicIsPlaying: boolean;
+  musicPaused: boolean;
+  musicAvailableCount: number;
   difficulty: DifficultyLevel;
   graphics: GraphicsQuality;
   language: LanguageCode;

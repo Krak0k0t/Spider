@@ -125,6 +125,17 @@ export interface TranslationBundle {
   tabControls: string;
   tabDifficulty: string;
   tabGraphics: string;
+  tabMusic: string;
+  musicCarouselBadge: string;
+  musicMuffledHint: string;
+  musicPrevBtn: string;
+  musicNextBtn: string;
+  musicPlayBtn: string;
+  musicPauseBtn: string;
+  musicPendingFiles: string;
+  musicImportBtn: string;
+  musicTrackPlaying: string;
+  musicTrackPaused: string;
   touchControlsLabel: string;
   touchAuto: string;
   touchOn: string;
@@ -287,6 +298,19 @@ const EN: TranslationBundle = {
   tabControls: 'Controls',
   tabDifficulty: 'Difficulty',
   tabGraphics: 'Graphics',
+  tabMusic: 'Soundtrack',
+  musicCarouselBadge: 'Nocturnal Carousel · Muffled Sound',
+  musicMuffledHint:
+    'Tracks start softly filtered under night canopy acoustics and cycle continuously.',
+  musicPrevBtn: 'Previous track',
+  musicNextBtn: 'Next track',
+  musicPlayBtn: 'Play',
+  musicPauseBtn: 'Pause',
+  musicPendingFiles:
+    'Nocturnal ambient music from open-source GitHub tracks is active. You can also load your own 7 .ogg files anytime.',
+  musicImportBtn: 'Load .ogg files',
+  musicTrackPlaying: 'Playing softly',
+  musicTrackPaused: 'Paused',
   touchControlsLabel: 'On-Screen Touch Controls',
   touchAuto: 'Auto',
   touchOn: 'Always On',
@@ -527,6 +551,19 @@ const RU: TranslationBundle = makeBundle({
   tabControls: 'Управление',
   tabDifficulty: 'Сложность',
   tabGraphics: 'Графика',
+  tabMusic: 'Музыка',
+  musicCarouselBadge: 'Ночная карусель · Приглушённое звучание',
+  musicMuffledHint:
+    'Композиции запускаются автоматически в мягком приглушённом звучании и сменяют друг друга по кругу.',
+  musicPrevBtn: 'Предыдущий трек',
+  musicNextBtn: 'Следующий трек',
+  musicPlayBtn: 'Играть',
+  musicPauseBtn: 'Пауза',
+  musicPendingFiles:
+    'Звучит ночной саундтрек из открытого архива GitHub. При желании можно загрузить свои 7 .ogg-файлов.',
+  musicImportBtn: 'Загрузить свои .ogg',
+  musicTrackPlaying: 'Звучит приглушённо',
+  musicTrackPaused: 'На паузе',
   touchControlsLabel: 'Сенсорное управление',
   touchAuto: 'Авто',
   touchOn: 'Вкл',

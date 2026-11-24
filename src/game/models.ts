@@ -9,7 +9,6 @@ export interface PavutinRig {
   abdomen: THREE.Mesh;
   chelicerae: [THREE.Group, THREE.Group];
   pedipalps: [THREE.Group, THREE.Group];
-  berriesGroup?: THREE.Group;
   legs: {
     hip: THREE.Group;
     knee: THREE.Group;
@@ -31,7 +30,6 @@ export interface WaspRig {
   blurFans: [THREE.Mesh, THREE.Mesh];
   abdomen: THREE.Group;
   legs: THREE.Group[];
-  auraDisc: THREE.Mesh;
   shadowDisc: THREE.Mesh;
 }
 
@@ -79,8 +77,8 @@ export interface ForestWorldHandle {
   windTimeUniform: { value: number };
   windStrengthUniform: { value: number };
   moonBeamsGroup: THREE.Group;
-  greatFrameBeam: THREE.Mesh;
-  greatFrameHalo: THREE.Mesh;
+  sacredFrameLight: THREE.PointLight;
+  greatFrameGlade: THREE.Mesh;
   moonMesh: THREE.Mesh;
   pantryLight: THREE.PointLight;
   uspokhLeafShadow: THREE.Mesh;
@@ -245,12 +243,12 @@ export function createPavutinModel(
     color: isElder ? 0xdde5f2 : 0xffffff,
     map: isElder ? textures.uspokhChitinMap : textures.spiderChitinMap,
     normalMap: textures.spiderChitinNormal,
-    normalScale: new THREE.Vector2(isElder ? 1.15 : 0.95, isElder ? 1.15 : 0.95),
-    roughness: isElder ? 0.88 : 0.82,
-    metalness: 0.04,
-    sheen: 0.95,
-    sheenRoughness: 0.52,
-    sheenColor: new THREE.Color(isElder ? 0xc2d4ed : 0x9fb8e0),
+    normalScale: new THREE.Vector2(isElder ? 1.15 : 1.05, isElder ? 1.15 : 1.05),
+    roughness: isElder ? 0.84 : 0.72,
+    metalness: 0.06,
+    sheen: 1.0,
+    sheenRoughness: 0.34,
+    sheenColor: new THREE.Color(isElder ? 0xd0e2fa : 0xb5d6ff),
   });
 
   const warmChitinMat = new THREE.MeshPhysicalMaterial({
@@ -419,75 +417,6 @@ export function createPavutinModel(
     body.add(pGroup);
   });
 
-  // Juicy wild crimson forest berries with Subsurface Scattering (SSS) cradled in Pavutin's front grasp
-  let berriesGroup: THREE.Group | undefined;
-  if (!isElder) {
-    berriesGroup = new THREE.Group();
-    berriesGroup.position.set(0, -0.044, 0.372);
-
-    const berryMat = new THREE.MeshPhysicalMaterial({
-      color: 0xd91834,
-      emissive: 0x45060e,
-      emissiveIntensity: 0.52,
-      roughness: 0.14,
-      metalness: 0.0,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.05,
-      sheen: 0.55,
-      sheenRoughness: 0.35,
-      sheenColor: new THREE.Color(0xffb4c0),
-    });
-    berryMat.onBeforeCompile = (shader) => {
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <opaque_fragment>',
-        `vec3 bN = normalize(normal);
-        vec3 bV = normalize(vViewPosition);
-        vec3 bMoonView = normalize((viewMatrix * vec4(0.32, 0.72, -0.62, 0.0)).xyz);
-        float rimSss = pow(1.0 - abs(dot(bN, bV)), 2.0);
-        float wrapSss = clamp(dot(bN, bMoonView) * 0.5 + 0.5, 0.0, 1.0);
-        float backTranslucency = pow(clamp(dot(-bV, bMoonView) * 0.5 + 0.5, 0.0, 1.0), 1.6);
-        outgoingLight += vec3(1.0, 0.16, 0.14) * (wrapSss * 0.45 + rimSss * 0.85 + backTranslucency * 0.38);
-        #include <opaque_fragment>`,
-      );
-    };
-    berryMat.customProgramCacheKey = () => 'berry_sss_v2';
-
-    const calyxMat = new THREE.MeshStandardMaterial({
-      color: 0x2a4f2b,
-      roughness: 0.72,
-    });
-    const berrySpecs: [number, number, number, number][] = [
-      [-0.034, 0.012, 0.014, 0.046],
-      [0.036, 0.008, 0.008, 0.042],
-      [0.002, -0.016, 0.046, 0.038],
-    ];
-    const berryGeo = new THREE.SphereGeometry(1, 14, 12);
-    const calyxGeo = new THREE.ConeGeometry(0.32, 0.42, 5);
-    berrySpecs.forEach(([bx, by, bz, br]) => {
-      const bMesh = new THREE.Mesh(berryGeo, berryMat);
-      bMesh.position.set(bx, by, bz);
-      bMesh.scale.set(br * 1.04, br * 0.96, br * 1.08);
-      bMesh.castShadow = true;
-      berriesGroup!.add(bMesh);
-
-      const calyx = new THREE.Mesh(calyxGeo, calyxMat);
-      calyx.position.set(bx, by + br * 0.86, bz);
-      calyx.scale.setScalar(br);
-      berriesGroup!.add(calyx);
-    });
-
-    const sprigStem = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.006, 0.008, 0.11, 6),
-      calyxMat,
-    );
-    sprigStem.rotation.z = 0.85;
-    sprigStem.rotation.x = 0.45;
-    sprigStem.position.set(0, 0.025, 0.004);
-    berriesGroup.add(sprigStem);
-
-    body.add(berriesGroup);
-  }
-
   // 8 True 4-Segment Hierarchical Legs + Tarsal Claws + Sensory Setae
   const legs: PavutinRig['legs'] = [];
   const coxaGeo = new THREE.SphereGeometry(0.03, 10, 8);
@@ -605,7 +534,6 @@ export function createPavutinModel(
     abdomen,
     chelicerae,
     pedipalps,
-    berriesGroup,
     legs,
     shadowDisc,
     silkGlowMat,
@@ -851,24 +779,6 @@ export function createKhryazhSyakayaModel(
   blurRight.rotation.z = 0.35;
   body.add(blurRight);
 
-  const auraDisc = new THREE.Mesh(
-    new THREE.RingGeometry(0.92, 1.24, 30),
-    new THREE.MeshStandardMaterial({
-      color: 0x000000,
-      emissive: 0xe69a28,
-      emissiveIntensity: 1.0,
-      transparent: true,
-      opacity: 0.22,
-      roughness: 1.0,
-      metalness: 0.0,
-      envMapIntensity: 0,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    }),
-  );
-  auraDisc.rotation.x = -Math.PI / 2;
-  root.add(auraDisc);
-
   const shadowDisc = new THREE.Mesh(
     new THREE.CircleGeometry(1.05, 22),
     new THREE.MeshStandardMaterial({
@@ -895,7 +805,6 @@ export function createKhryazhSyakayaModel(
     blurFans: [blurLeft, blurRight],
     abdomen,
     legs,
-    auraDisc,
     shadowDisc,
   };
 }
@@ -2722,19 +2631,14 @@ export function createForestWorld(
   ];
 
   const anchorMeshes = new Map<string, THREE.Mesh>();
-  const nodeOrbGeo = trackGeo(new THREE.SphereGeometry(0.085, 12, 10));
-  const greatOrbGeo = trackGeo(new THREE.SphereGeometry(0.135, 14, 12));
+  const dewDropGeo = trackGeo(new THREE.SphereGeometry(0.036, 10, 8));
   const budGeo = trackGeo(new THREE.ConeGeometry(0.024, 0.075, 6));
-  const haloSpriteMat = trackMat(
-    new THREE.SpriteMaterial({
-      map: textures.softGlowMap,
-      color: 0xaad2ff,
-      transparent: true,
-      opacity: 0.72,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    }),
-  );
+  const anchorShelfGeo = trackGeo(new THREE.CylinderGeometry(0.18, 0.06, 0.055, 10));
+  const anchorMossCushionGeo = trackGeo(new THREE.SphereGeometry(0.32, 8, 6));
+
+  const anchorBudPlacements: { x: number; y: number; z: number; rx: number; ry: number; rz: number }[] = [];
+  const shelfFungiPlacements: { x: number; y: number; z: number; ry: number; sx: number; sy: number; sz: number }[] = [];
+  const mossCushionPlacements: { x: number; y: number; z: number; sx: number; sy: number; sz: number }[] = [];
 
   anchors.forEach((anchor, idx) => {
     const gy = groundHeightAt(anchor.position.x, anchor.position.z);
@@ -2751,7 +2655,7 @@ export function createForestWorld(
       topPos,
     ]);
     const twig = new THREE.Mesh(
-      trackGeo(new THREE.TubeGeometry(twigCurve, 10, anchor.isGreatAnchor ? 0.078 : 0.048, 8, false)),
+      trackGeo(new THREE.TubeGeometry(twigCurve, 9, anchor.isGreatAnchor ? 0.078 : 0.048, 7, false)),
       darkWoodMat,
     );
     twig.castShadow = !isSoftwareGl;
@@ -2767,55 +2671,78 @@ export function createForestWorld(
       0.65,
     );
     const forkMesh = new THREE.Mesh(
-      trackGeo(new THREE.TubeGeometry(new THREE.LineCurve3(forkMid, forkEnd), 4, 0.025, 6, false)),
+      trackGeo(new THREE.TubeGeometry(new THREE.LineCurve3(forkMid, forkEnd), 3, 0.025, 5, false)),
       darkWoodMat,
     );
     scene.add(forkMesh);
 
-    const bud = new THREE.Mesh(budGeo, stemMat);
-    bud.position.copy(forkEnd);
-    bud.rotation.set(0.4, idx, 0.4);
-    scene.add(bud);
+    anchorBudPlacements.push(
+      { x: forkEnd.x, y: forkEnd.y, z: forkEnd.z, rx: 0.4, ry: idx, rz: 0.4 },
+      {
+        x: topPos.x - Math.cos(idx * 1.9) * 0.06,
+        y: topPos.y + 0.035,
+        z: topPos.z - Math.sin(idx * 1.9) * 0.06,
+        rx: -0.28,
+        ry: idx + 1.4,
+        rz: -0.32,
+      },
+    );
 
-    const orbMat = trackMat(
+    // Tiny clear nocturnal dewdrop nested inside the twig tip (no artificial spheres or halo flares)
+    const dewMat = trackMat(
       new THREE.MeshPhysicalMaterial({
-        color: anchor.isGreatAnchor ? 0xe8f5ff : anchor.isFrameNode ? 0xb8d9ff : 0xd8ebff,
-        emissive: anchor.isGreatAnchor ? 0x5ca4ff : anchor.isFrameNode ? 0x3b76cc : 0x3866a8,
-        emissiveIntensity: anchor.isGreatAnchor ? 1.55 : 0.98,
-        roughness: 0.08,
+        color: 0xeef6ff,
+        emissive: anchor.isGreatAnchor ? 0x6eaee6 : anchor.isFrameNode ? 0x5288cc : 0x3b679e,
+        emissiveIntensity: anchor.isGreatAnchor ? 0.34 : 0.22,
+        transparent: true,
+        opacity: 0.86,
+        roughness: 0.04,
+        metalness: 0.05,
         clearcoat: 1.0,
+        clearcoatRoughness: 0.02,
       }),
     );
-    const orb = new THREE.Mesh(anchor.isGreatAnchor ? greatOrbGeo : nodeOrbGeo, orbMat);
-    orb.position.copy(topPos);
-    scene.add(orb);
-
-    const glowSprite = new THREE.Sprite(haloSpriteMat);
-    glowSprite.scale.setScalar(anchor.isGreatAnchor ? 0.85 : 0.48);
-    orb.add(glowSprite);
-    anchorMeshes.set(anchor.id, orb);
+    const dewDrop = new THREE.Mesh(dewDropGeo, dewMat);
+    dewDrop.scale.set(0.88, 1.32, 0.88);
+    dewDrop.position.set(topPos.x, topPos.y - 0.015, topPos.z);
+    scene.add(dewDrop);
+    anchorMeshes.set(anchor.id, dewDrop);
 
     if (anchor.isGreatAnchor) {
-      const shadowMark = new THREE.Mesh(
-        trackGeo(new THREE.RingGeometry(0.65, 1.1, 24)),
-        trackMat(
-          new THREE.MeshStandardMaterial({
-            color: 0x050912,
-            transparent: true,
-            opacity: 0.65,
-            roughness: 1.0,
-            metalness: 0.0,
-            envMapIntensity: 0,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-          }),
-        ),
-      );
-      shadowMark.rotation.x = -Math.PI / 2;
-      shadowMark.position.set(anchor.position.x, gy + 0.03, anchor.position.z);
-      scene.add(shadowMark);
+      mossCushionPlacements.push({
+        x: anchor.position.x + leanX * 0.45,
+        y: gy + 0.03,
+        z: anchor.position.z + leanZ * 0.45,
+        sx: 1.25,
+        sy: 0.28,
+        sz: 1.15,
+      });
+
+      for (let f = 0; f < 3; f++) {
+        const ang = idx * 1.3 + f * 1.8;
+        shelfFungiPlacements.push({
+          x: anchor.position.x + Math.cos(ang) * 0.14,
+          y: gy + 0.22 + f * 0.14,
+          z: anchor.position.z + Math.sin(ang) * 0.14,
+          ry: ang,
+          sx: 1.15 - f * 0.15,
+          sy: 1,
+          sz: 0.82,
+        });
+      }
     }
   });
+
+  const anchorBudInst = new THREE.InstancedMesh(budGeo, stemMat, anchorBudPlacements.length);
+  anchorBudPlacements.forEach((b, i) => {
+    dummy.position.set(b.x, b.y, b.z);
+    dummy.rotation.set(b.rx, b.ry, b.rz);
+    dummy.scale.setScalar(1);
+    dummy.updateMatrix();
+    anchorBudInst.setMatrixAt(i, dummy.matrix);
+  });
+  anchorBudInst.computeBoundingSphere();
+  scene.add(anchorBudInst);
 
   // Moonlight-glistening cylindrical spiderwebs at game start (First Field Great Frame + Elder Uspokh's orb cobweb)
   const starterSilkMat = trackMat(
@@ -2922,19 +2849,8 @@ export function createForestWorld(
   );
   dummy.quaternion.identity();
 
-  // Sacred Ancient Great Frame Rune Stones (Warm Gold / Ivory Glow separating sacred site)
-  const runeDiscMat = trackMat(
-    new THREE.MeshStandardMaterial({
-      color: 0x1a150e,
-      emissive: 0xffd785,
-      emissiveMap: textures.runeEmissiveMap,
-      emissiveIntensity: 1.55,
-      roughness: 0.45,
-      metalness: 0.08,
-    }),
-  );
+  // Natural mossy monolith stones & pale bracket fungi framing the Great Frame clearing
   const runeStoneGeo = trackGeo(createDisplacedRockGeometry(11.4, 2));
-  const runeSigilGeo = trackGeo(new THREE.CircleGeometry(0.46, 20));
   for (const sx of [-3.6, 3.6]) {
     const sz = -13.5;
     const gy = groundHeightAt(sx, sz);
@@ -2946,57 +2862,78 @@ export function createForestWorld(
     monolith.receiveShadow = !isSoftwareGl;
     scene.add(monolith);
 
-    const sigil = new THREE.Mesh(runeSigilGeo, runeDiscMat);
-    sigil.position.set(sx + (sx < 0 ? 0.34 : -0.34), gy + 1.08, sz + 0.36);
-    sigil.rotation.y = sx < 0 ? 0.62 : -0.62;
-    scene.add(sigil);
+    mossCushionPlacements.push({
+      x: sx,
+      y: gy + 1.48,
+      z: sz,
+      sx: 1.42,
+      sy: 0.44,
+      sz: 1.24,
+    });
+
+    for (let f = 0; f < 2; f++) {
+      shelfFungiPlacements.push({
+        x: sx + (sx < 0 ? 0.32 : -0.32),
+        y: gy + 0.72 + f * 0.28,
+        z: sz + 0.24,
+        ry: sx < 0 ? 0.6 : -0.6,
+        sx: 1.2 - f * 0.2,
+        sy: 1,
+        sz: 0.85,
+      });
+    }
   }
 
-  const sacredFrameLight = new THREE.PointLight(0xffcf78, 1.85, 8.8, 2);
-  sacredFrameLight.position.set(0, groundHeightAt(0, -13.5) + 2.1, -13.5);
+  const anchorMossInst = new THREE.InstancedMesh(anchorMossCushionGeo, mossPatchMat, mossCushionPlacements.length);
+  mossCushionPlacements.forEach((m, i) => {
+    dummy.position.set(m.x, m.y, m.z);
+    dummy.rotation.set(0, i * 0.9, 0);
+    dummy.scale.set(m.sx, m.sy, m.sz);
+    dummy.updateMatrix();
+    anchorMossInst.setMatrixAt(i, dummy.matrix);
+  });
+  anchorMossInst.receiveShadow = !isSoftwareGl;
+  anchorMossInst.computeBoundingSphere();
+  scene.add(anchorMossInst);
+
+  const anchorShelfInst = new THREE.InstancedMesh(anchorShelfGeo, capMat, shelfFungiPlacements.length);
+  shelfFungiPlacements.forEach((s, i) => {
+    dummy.position.set(s.x, s.y, s.z);
+    dummy.rotation.set(0, s.ry, 0);
+    dummy.scale.set(s.sx, s.sy, s.sz);
+    dummy.updateMatrix();
+    anchorShelfInst.setMatrixAt(i, dummy.matrix);
+  });
+  anchorShelfInst.castShadow = !isSoftwareGl;
+  anchorShelfInst.computeBoundingSphere();
+  scene.add(anchorShelfInst);
+
+  const sacredFrameLight = new THREE.PointLight(0xd4e8ff, 0.85, 10.5, 2);
+  sacredFrameLight.position.set(0, groundHeightAt(0, -13.5) + 2.2, -13.5);
   scene.add(sacredFrameLight);
 
-  const greatFrameBeam = new THREE.Mesh(
-    trackGeo(new THREE.CylinderGeometry(0.25, 2.2, 48, 20, 1, true)),
-    trackMat(
-      new THREE.MeshStandardMaterial({
-        color: 0x000000,
-        emissive: 0xffe09c,
-        emissiveIntensity: 1.45,
-        transparent: true,
-        opacity: 0,
-        roughness: 1.0,
-        metalness: 0.0,
-        envMapIntensity: 0,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      }),
-    ),
+  const greatFrameGladeMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: 0xa4cbb2,
+      map: textures.mossPatchMap,
+      alphaMap: textures.mossPatchAlpha,
+      normalMap: textures.mossPatchNormal,
+      emissive: 0x5aa392,
+      emissiveIntensity: 0.08,
+      transparent: true,
+      opacity: 0.88,
+      roughness: 0.92,
+      metalness: 0.0,
+      depthWrite: false,
+    }),
   );
-  greatFrameBeam.position.set(0, 24, -13.5);
-  scene.add(greatFrameBeam);
-
-  const greatFrameHalo = new THREE.Mesh(
-    trackGeo(new THREE.RingGeometry(1.4, 2.4, 32)),
-    trackMat(
-      new THREE.MeshStandardMaterial({
-        color: 0x000000,
-        emissive: 0xffd98a,
-        emissiveIntensity: 1.2,
-        transparent: true,
-        opacity: 0.18,
-        roughness: 1.0,
-        metalness: 0.0,
-        envMapIntensity: 0,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      }),
-    ),
+  const greatFrameGlade = new THREE.Mesh(
+    trackGeo(new THREE.CircleGeometry(2.35, 24)),
+    greatFrameGladeMat,
   );
-  greatFrameHalo.rotation.x = -Math.PI / 2;
-  greatFrameHalo.position.set(0, groundHeightAt(0, -13.5) + 0.04, -13.5);
-  scene.add(greatFrameHalo);
+  greatFrameGlade.rotation.x = -Math.PI / 2;
+  greatFrameGlade.position.set(0, groundHeightAt(0, -13.5) + 0.03, -13.5);
+  scene.add(greatFrameGlade);
 
   // Volumetric Moonlight Shafts
   const moonBeamsGroup = new THREE.Group();
@@ -3034,10 +2971,11 @@ export function createForestWorld(
   scene.add(moonBeamsGroup);
 
   const uspokhLeafShadow = new THREE.Mesh(
-    trackGeo(new THREE.CircleGeometry(1.3, 18)),
+    trackGeo(new THREE.CircleGeometry(1.45, 20)),
     trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0x04070e,
+        color: 0xffffff,
+        map: textures.contactShadowMap,
         transparent: true,
         opacity: 0,
         roughness: 1.0,
@@ -3048,7 +2986,7 @@ export function createForestWorld(
     ),
   );
   uspokhLeafShadow.rotation.x = -Math.PI / 2;
-  uspokhLeafShadow.position.set(-2.35, groundHeightAt(-2.35, 0.52) + 0.05, 0.52);
+  uspokhLeafShadow.position.set(-2.35, groundHeightAt(-2.35, 0.52) + 0.04, 0.52);
   scene.add(uspokhLeafShadow);
 
   // Fallen Autumnal / Nocturnal Leaves & Broken Woodland Twigs on Forest Humus (InstancedMesh)
@@ -3274,6 +3212,21 @@ export function createForestWorld(
   if (distantCrowns.instanceColor) distantCrowns.instanceColor.needsUpdate = true;
   scene.add(distantTreesA, distantTreesB, distantCrowns);
 
+  // Seamless outer nocturnal forest horizon ring so distant gaps fade organically into deep woods
+  const horizonRing = new THREE.Mesh(
+    trackGeo(new THREE.CylinderGeometry(64, 66, 36, 36, 1, true)),
+    trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x040912,
+        roughness: 1.0,
+        metalness: 0.0,
+        side: THREE.BackSide,
+      }),
+    ),
+  );
+  horizonRing.position.y = 14;
+  scene.add(horizonRing);
+
   // Drifting Low-Lying Nocturnal Ground Mist Wisps + Green-Firefly-Illuminated Volumetric Pond Mist
   const mistGeo = trackGeo(new THREE.PlaneGeometry(6.8, 2.2));
   const mistMat = trackMat(
@@ -3482,6 +3435,38 @@ export function createForestWorld(
     ),
   );
 
+  const dynamicRoots = new Set<THREE.Object3D>([
+    uspokh.root,
+    moonBeamsGroup,
+    sacredFrameLight,
+    greatFrameGlade,
+    moonMesh,
+    pantryLight,
+    pondFireflyLight,
+    uspokhLeafShadow,
+    ...anchorMeshes.values(),
+  ]);
+  const isDynamicObject = (obj: THREE.Object3D): boolean => {
+    let cur: THREE.Object3D | null = obj;
+    while (cur) {
+      if (dynamicRoots.has(cur)) return true;
+      cur = cur.parent;
+    }
+    return false;
+  };
+  scene.traverse((obj) => {
+    if (obj === scene || isDynamicObject(obj)) return;
+    if (
+      obj instanceof THREE.Mesh ||
+      obj instanceof THREE.InstancedMesh ||
+      obj instanceof THREE.Points ||
+      obj instanceof THREE.Group
+    ) {
+      obj.matrixAutoUpdate = false;
+      obj.updateMatrix();
+    }
+  });
+
   return {
     anchors,
     anchorMeshes,
@@ -3503,8 +3488,8 @@ export function createForestWorld(
     windTimeUniform,
     windStrengthUniform,
     moonBeamsGroup,
-    greatFrameBeam,
-    greatFrameHalo,
+    sacredFrameLight,
+    greatFrameGlade,
     moonMesh,
     pantryLight,
     uspokhLeafShadow,

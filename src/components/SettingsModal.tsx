@@ -11,6 +11,7 @@ import {
   mouseButtonToCode,
   rebindActionSlot,
 } from '../game/settings';
+import { getTrackDisplay, SOUNDTRACK_TRACKS } from '../game/soundtrack';
 import type {
   DifficultyLevel,
   GraphicsQuality,
@@ -19,15 +20,23 @@ import type {
   UserSettings,
 } from '../game/types';
 
-type SettingsTab = 'language' | 'controls' | 'difficulty' | 'graphics';
+type SettingsTab = 'language' | 'music' | 'controls' | 'difficulty' | 'graphics';
 
 interface SettingsModalProps {
   open: boolean;
   settings: UserSettings;
   isFullscreen: boolean;
+  musicTrackIndex: number;
+  musicPaused: boolean;
+  musicAvailableCount: number;
   onChange: (next: UserSettings) => void;
   onClose: () => void;
   onToggleFullscreen: () => void;
+  onSelectTrack: (index: number) => void;
+  onPrevTrack: () => void;
+  onNextTrack: () => void;
+  onToggleMusic: () => void;
+  onImportMusicFiles?: (files: FileList) => void;
 }
 
 const ACTION_ORDER: InputAction[] = [
@@ -51,9 +60,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   open,
   settings,
   isFullscreen,
+  musicTrackIndex,
+  musicPaused,
+  musicAvailableCount,
   onChange,
   onClose,
   onToggleFullscreen,
+  onSelectTrack,
+  onPrevTrack,
+  onNextTrack,
+  onToggleMusic,
+  onImportMusicFiles,
 }) => {
   const [tab, setTab] = useState<SettingsTab>('language');
   const [capturing, setCapturing] = useState<{
@@ -192,6 +209,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {(
             [
               ['language', t.tabLanguage],
+              ['music', t.tabMusic],
               ['controls', t.tabControls],
               ['difficulty', t.tabDifficulty],
               ['graphics', t.tabGraphics],
@@ -202,6 +220,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <button
                 key={id}
                 type="button"
+                data-testid={`settings-tab-${id}`}
                 onClick={() => {
                   setCapturing(null);
                   setTab(id);
@@ -245,6 +264,122 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {tab === 'music' && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#9ec5ff]/25 bg-[#0f1829] p-4">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] tracking-[0.12em] text-[#8db5e6] uppercase">
+                    {t.musicCarouselBadge} · {musicAvailableCount}/{SOUNDTRACK_TRACKS.length}
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed text-[#9cb2cf]">
+                    {t.musicMuffledHint}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    aria-label={t.musicPrevBtn}
+                    onClick={onPrevTrack}
+                    className="cursor-pointer rounded border border-[#9ec5ff]/25 bg-[#121e33] px-3 py-1.5 text-xs font-medium text-[#cfe2ff] hover:border-[#9ec5ff]/60 hover:text-white"
+                  >
+                    ⏮
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onToggleMusic}
+                    className="cursor-pointer rounded border border-[#9ec5ff]/45 bg-[#203557] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#2a4570]"
+                  >
+                    {musicPaused ? `▶ ${t.musicPlayBtn}` : `⏸ ${t.musicPauseBtn}`}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t.musicNextBtn}
+                    onClick={onNextTrack}
+                    className="cursor-pointer rounded border border-[#9ec5ff]/25 bg-[#121e33] px-3 py-1.5 text-xs font-medium text-[#cfe2ff] hover:border-[#9ec5ff]/60 hover:text-white"
+                  >
+                    ⏭
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2.5 rounded border border-[#9ec5ff]/20 bg-[#0d1626]/90 px-3.5 py-2.5 text-xs text-[#abc2df]">
+                <span className="min-w-0 flex-1 leading-relaxed">
+                  {t.musicPendingFiles}
+                </span>
+                {onImportMusicFiles && (
+                  <label className="cursor-pointer shrink-0 rounded border border-[#9ec5ff]/35 bg-[#162742] px-3 py-1.5 text-[11px] font-medium text-[#dcebff] transition-colors hover:border-[#9ec5ff]/70 hover:text-white">
+                    {t.musicImportBtn}
+                    <input
+                      type="file"
+                      accept=".ogg,audio/ogg"
+                      multiple
+                      className="hidden"
+                      data-testid="music-import-input"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          onImportMusicFiles(e.target.files);
+                          e.target.value = '';
+                        }
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+
+              <div className="divide-y divide-[#9ec5ff]/10 rounded border border-[#9ec5ff]/18 bg-[#0f1829]">
+                {SOUNDTRACK_TRACKS.map((track, idx) => {
+                  const active = idx === musicTrackIndex;
+                  const display = getTrackDisplay(track, settings.language);
+                  return (
+                    <button
+                      key={track.id}
+                      type="button"
+                      data-track-id={track.id}
+                      onClick={() => onSelectTrack(idx)}
+                      className={`flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left transition-colors ${
+                        active
+                          ? 'bg-[#1b2e4d] text-white'
+                          : 'text-[#c2d4ea] hover:bg-[#142036] hover:text-white'
+                      }`}
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <span className="font-mono-num text-xs text-[#7ea7e0]">
+                          {String(idx + 1).padStart(2, '0')}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold">
+                            {display.title}
+                          </div>
+                          <div className="truncate text-xs text-[#8ea6c9]">
+                            {display.mood} ·{' '}
+                            <span className="font-mono-num text-[#6f8ab0]">
+                              {track.file}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <span
+                        className={`shrink-0 text-[11px] font-medium ${
+                          active
+                            ? musicPaused
+                              ? 'text-[#f2c97d]'
+                              : 'text-[#9effdb]'
+                            : 'text-[#6c83a6]'
+                        }`}
+                      >
+                        {active
+                          ? musicPaused
+                            ? t.musicTrackPaused
+                            : t.musicTrackPlaying
+                          : '○'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 

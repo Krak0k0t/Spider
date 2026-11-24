@@ -1,30 +1,76 @@
-import type { ChapterPhase, LocationZone, WaspState, WeatherState } from './types';
+import {
+  getNextCarouselIndex,
+  getPrevCarouselIndex,
+  normalizeTrackIndex,
+  SOUNDTRACK_TRACKS,
+  type SoundtrackTrack,
+} from './soundtrack';
+import type { LocationZone } from './types';
 
-export interface MusicContext {
-  active: boolean;
-  isTitle: boolean;
-  zone: LocationZone;
-  chapter: ChapterPhase;
-  waspState: WaspState;
-  fear: number; // 0..100
-  hiddenInNettle: boolean;
-  weather: WeatherState;
+export interface MusicCarouselStatus {
+  trackIndex: number;
+  trackId: string;
+  isPlaying: boolean;
+  paused: boolean;
+  availableCount: number;
+}
+
+const CUSTOM_DB_NAME = 'orb_weaver_custom_music_v1';
+const CUSTOM_STORE_NAME = 'tracks';
+
+function openCustomMusicDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB unavailable'));
+      return;
+    }
+    const req = indexedDB.open(CUSTOM_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(CUSTOM_STORE_NAME)) {
+        db.createObjectStore(CUSTOM_STORE_NAME);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function matchTrackIndexForFilename(filename: string): number {
+  const clean = filename.trim().toLowerCase();
+  const exact = SOUNDTRACK_TRACKS.findIndex((t) => t.file.toLowerCase() === clean);
+  if (exact !== -1) return exact;
+  return SOUNDTRACK_TRACKS.findIndex((t) =>
+    clean.includes(t.file.replace(/\.ogg$/i, '').toLowerCase()),
+  );
 }
 
 /**
- * Procedural Web Audio soundscape & adaptive nocturnal forest score for Orb Weaver:
- * - Adaptive music scheduler varying harmony, instrumentation, tempo & filter by zone and threat
- * - Violin-like silk string plucks, pattern chords, jump/land thuds, grapple zip, fly chime
- * - Spatialized wasp buzz modulated by distance and nettle cover + wind noise bed
+ * Spatial SFX + Muffled Nocturnal Soundtrack Carousel for Orb Weaver:
+ * - Synthesized music completely removed; replaced by 7-track .ogg carousel playback
+ * - Supports user's exact 7 .ogg tracks (via /public/music/ or IndexedDB import)
+ *   and immediately plays verified GitHub open-source nocturnal .ogg tracks as active fallback
+ * - Routes soundtrack through a soft muffled low-pass filter (~1150 Hz) at subdued gain
+ * - Auto-starts cleanly and unlocks on first pointer/key gesture anywhere on window
  */
 export class SoundEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
-  private musicBus: GainNode | null = null;
-  private musicFilter: BiquadFilterNode | null = null;
-  private padOsc1: OscillatorNode | null = null;
-  private padOsc2: OscillatorNode | null = null;
-  private padGain: GainNode | null = null;
+  private soundtrackFilter: BiquadFilterNode | null = null;
+  private soundtrackGain: GainNode | null = null;
+  private audioEl: HTMLAudioElement | null = null;
+  private audioSourceNode: MediaElementAudioSourceNode | null = null;
+  private audioRouted = false;
+
+  private availableFiles = new Set<string>();
+  private ambientFiles = new Set<string>();
+  private customBlobUrls = new Map<string, string>();
+  private manifestLoaded = false;
+  private manifestPromise: Promise<void> | null = null;
+  private currentTrackIndex = 0;
+  private userPaused = false;
+  private wantsAutoplay = true;
+  private onMusicChange?: () => void;
 
   private windGain: GainNode | null = null;
   private windFilter: BiquadFilterNode | null = null;
@@ -43,8 +89,304 @@ export class SoundEngine {
 
   private muted = false;
   private initialized = false;
-  private musicStepAccum = 0;
-  private musicBeatIdx = 0;
+  private disposed = false;
+
+  constructor(onMusicChange?: () => void) {
+    this.onMusicChange = onMusicChange;
+    this.bindGestureUnlock();
+    this.initMusicManifest();
+  }
+
+  private onUserGestureUnlock = (): void => {
+    if (this.disposed) return;
+    this.ensureStarted();
+    if (this.wantsAutoplay && !this.userPaused) {
+      void this.tryStartCurrentTrack();
+    }
+  };
+
+  private bindGestureUnlock(): void {
+    if (typeof window === 'undefined') return;
+    window.addEventListener('pointerdown', this.onUserGestureUnlock, { passive: true });
+    window.addEventListener('keydown', this.onUserGestureUnlock, { passive: true });
+  }
+
+  private unbindGestureUnlock(): void {
+    if (typeof window === 'undefined') return;
+    window.removeEventListener('pointerdown', this.onUserGestureUnlock);
+    window.removeEventListener('keydown', this.onUserGestureUnlock);
+  }
+
+  private initMusicManifest(): void {
+    if (typeof window === 'undefined') return;
+    const manifestTask =
+      typeof fetch === 'function'
+        ? fetch('/music/manifest.json', { cache: 'no-cache' })
+            .then(async (res) => {
+              if (!res.ok) return;
+              const data = (await res.json()) as {
+                available?: unknown;
+                ambient?: unknown;
+              };
+              if (Array.isArray(data?.available)) {
+                data.available.forEach((f) => {
+                  if (typeof f === 'string' && f.trim()) {
+                    this.availableFiles.add(f.trim());
+                  }
+                });
+              }
+              if (Array.isArray(data?.ambient)) {
+                data.ambient.forEach((f) => {
+                  if (typeof f === 'string' && f.trim()) {
+                    this.ambientFiles.add(f.trim());
+                  }
+                });
+              }
+            })
+            .catch(() => {
+              // Ignore fetch errors cleanly
+            })
+        : Promise.resolve();
+
+    const idbTask = this.loadCustomTracksFromDb();
+
+    this.manifestPromise = Promise.all([manifestTask, idbTask]).then(() => {
+      this.manifestLoaded = true;
+      if (!this.disposed && this.wantsAutoplay && !this.userPaused) {
+        void this.tryStartCurrentTrack();
+      }
+      this.onMusicChange?.();
+    });
+  }
+
+  private async loadCustomTracksFromDb(): Promise<void> {
+    try {
+      const db = await openCustomMusicDb();
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction(CUSTOM_STORE_NAME, 'readonly');
+        const store = tx.objectStore(CUSTOM_STORE_NAME);
+        const req = store.openCursor();
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          const key = String(cursor.key);
+          const val = cursor.value;
+          if (val instanceof Blob && !this.disposed) {
+            const prev = this.customBlobUrls.get(key);
+            if (prev) URL.revokeObjectURL(prev);
+            this.customBlobUrls.set(key, URL.createObjectURL(val));
+          }
+          cursor.continue();
+        };
+        req.onerror = () => resolve();
+      });
+      db.close();
+    } catch {
+      // IndexedDB unavailable in private contexts — ignore
+    }
+  }
+
+  public async importCustomMusicFiles(files: FileList | File[]): Promise<number> {
+    const arr = Array.from(files);
+    if (arr.length === 0) return 0;
+
+    let imported = 0;
+    let db: IDBDatabase | null = null;
+    try {
+      db = await openCustomMusicDb();
+    } catch {
+      db = null;
+    }
+
+    for (let i = 0; i < arr.length; i++) {
+      const file = arr[i];
+      const matchedIdx = matchTrackIndexForFilename(file.name);
+      const targetTrack =
+        matchedIdx !== -1
+          ? SOUNDTRACK_TRACKS[matchedIdx]
+          : SOUNDTRACK_TRACKS[i % SOUNDTRACK_TRACKS.length];
+      if (!targetTrack) continue;
+
+      const prevUrl = this.customBlobUrls.get(targetTrack.file);
+      if (prevUrl) URL.revokeObjectURL(prevUrl);
+      this.customBlobUrls.set(targetTrack.file, URL.createObjectURL(file));
+      imported++;
+
+      if (db) {
+        await new Promise<void>((resolve) => {
+          const tx = db!.transaction(CUSTOM_STORE_NAME, 'readwrite');
+          tx.objectStore(CUSTOM_STORE_NAME).put(file, targetTrack.file);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        });
+      }
+    }
+
+    db?.close();
+    if (imported > 0) {
+      this.userPaused = false;
+      this.wantsAutoplay = true;
+      await this.tryStartCurrentTrack(true);
+      this.onMusicChange?.();
+    }
+    return imported;
+  }
+
+  private resolveTrackPlaybackUrl(track: SoundtrackTrack): string | null {
+    const blobUrl = this.customBlobUrls.get(track.file);
+    if (blobUrl) return blobUrl;
+    if (this.availableFiles.has(track.file)) return track.url;
+    if (this.ambientFiles.has(track.fallbackFile)) return track.fallbackUrl;
+    return null;
+  }
+
+  private hasPlayableSource(track: SoundtrackTrack): boolean {
+    return this.resolveTrackPlaybackUrl(track) !== null;
+  }
+
+  private ensureAudioElement(): HTMLAudioElement | null {
+    if (typeof Audio === 'undefined') return null;
+    if (!this.audioEl) {
+      const el = new Audio();
+      el.preload = 'auto';
+      el.loop = false;
+      el.volume = 0.22; // subdued fallback level if Web Audio node routing isn't active yet
+      el.addEventListener('ended', () => {
+        if (this.disposed) return;
+        this.advanceCarousel(1, true);
+      });
+      el.addEventListener('play', () => {
+        this.unbindGestureUnlock();
+        this.onMusicChange?.();
+      });
+      el.addEventListener('pause', () => this.onMusicChange?.());
+      el.addEventListener('error', () => {
+        if (this.disposed) return;
+        this.onMusicChange?.();
+      });
+      this.audioEl = el;
+    }
+    return this.audioEl;
+  }
+
+  private routeAudioElementThroughMuffledBus(): void {
+    if (this.audioRouted || !this.ctx || !this.soundtrackGain || !this.audioEl) return;
+    try {
+      const src = this.ctx.createMediaElementSource(this.audioEl);
+      src.connect(this.soundtrackGain);
+      this.audioEl.volume = 1.0; // muffled level controlled smoothly via Web Audio soundtrackGain
+      this.audioSourceNode = src;
+      this.audioRouted = true;
+    } catch {
+      // Fallback to native HTMLAudioElement volume if media routing fails
+    }
+  }
+
+  private async tryStartCurrentTrack(forceRestart = false): Promise<void> {
+    if (this.disposed || this.userPaused) return;
+    if (!this.manifestLoaded && this.manifestPromise) {
+      await this.manifestPromise;
+    }
+    const track = SOUNDTRACK_TRACKS[this.currentTrackIndex];
+    if (!track) return;
+    const rawUrl = this.resolveTrackPlaybackUrl(track);
+    if (!rawUrl) return;
+
+    const el = this.ensureAudioElement();
+    if (!el) return;
+    this.routeAudioElementThroughMuffledBus();
+
+    const resolvedHref = rawUrl.startsWith('blob:')
+      ? rawUrl
+      : new URL(rawUrl, window.location.origin).href;
+
+    if (forceRestart || el.src !== resolvedHref) {
+      el.src = rawUrl;
+    }
+    el.muted = this.muted;
+    try {
+      await el.play();
+    } catch {
+      // Browser autoplay restriction: queued and unlocks automatically on first gesture
+    }
+    this.onMusicChange?.();
+  }
+
+  public getMusicStatus(): MusicCarouselStatus {
+    const track = SOUNDTRACK_TRACKS[this.currentTrackIndex] || SOUNDTRACK_TRACKS[0];
+    const isPlaying = Boolean(
+      this.audioEl &&
+        !this.audioEl.paused &&
+        !this.audioEl.ended &&
+        this.hasPlayableSource(track),
+    );
+    const playableCount = SOUNDTRACK_TRACKS.filter((t) => this.hasPlayableSource(t)).length;
+    return {
+      trackIndex: this.currentTrackIndex,
+      trackId: track.id,
+      isPlaying,
+      paused: this.userPaused,
+      availableCount: playableCount,
+    };
+  }
+
+  public selectTrack(index: number, autoplay = true): void {
+    this.ensureStarted();
+    this.currentTrackIndex = normalizeTrackIndex(index, SOUNDTRACK_TRACKS.length);
+    if (autoplay) {
+      this.userPaused = false;
+      this.wantsAutoplay = true;
+      void this.tryStartCurrentTrack(true);
+    }
+    this.onMusicChange?.();
+  }
+
+  public advanceCarousel(delta: -1 | 1, fromAutoEnd = false): void {
+    const nextIdx =
+      delta >= 0
+        ? getNextCarouselIndex(this.currentTrackIndex, SOUNDTRACK_TRACKS.length)
+        : getPrevCarouselIndex(this.currentTrackIndex, SOUNDTRACK_TRACKS.length);
+
+    if (fromAutoEnd) {
+      let candidate = nextIdx;
+      for (let i = 0; i < SOUNDTRACK_TRACKS.length; i++) {
+        if (this.hasPlayableSource(SOUNDTRACK_TRACKS[candidate])) {
+          this.selectTrack(candidate, true);
+          return;
+        }
+        candidate = getNextCarouselIndex(candidate, SOUNDTRACK_TRACKS.length);
+      }
+    }
+    this.selectTrack(nextIdx, !this.userPaused || !fromAutoEnd);
+  }
+
+  public nextTrack(): void {
+    this.ensureStarted();
+    this.userPaused = false;
+    this.advanceCarousel(1, false);
+  }
+
+  public prevTrack(): void {
+    this.ensureStarted();
+    this.userPaused = false;
+    this.advanceCarousel(-1, false);
+  }
+
+  public toggleMusicPlayback(): void {
+    this.ensureStarted();
+    if (this.userPaused) {
+      this.userPaused = false;
+      this.wantsAutoplay = true;
+      void this.tryStartCurrentTrack();
+    } else {
+      this.userPaused = true;
+      this.audioEl?.pause();
+    }
+    this.onMusicChange?.();
+  }
 
   public isMuted(): boolean {
     return this.muted;
@@ -52,6 +394,9 @@ export class SoundEngine {
 
   public setMuted(mute: boolean): void {
     this.muted = mute;
+    if (this.audioEl) {
+      this.audioEl.muted = mute;
+    }
     if (this.masterGain && this.ctx) {
       this.masterGain.gain.setTargetAtTime(
         mute ? 0 : 0.44,
@@ -71,6 +416,13 @@ export class SoundEngine {
       if (this.ctx && this.ctx.state === 'suspended') {
         void this.ctx.resume();
       }
+      if (
+        this.wantsAutoplay &&
+        !this.userPaused &&
+        (!this.audioEl || this.audioEl.paused)
+      ) {
+        void this.tryStartCurrentTrack();
+      }
       return;
     }
 
@@ -86,34 +438,16 @@ export class SoundEngine {
       master.gain.value = this.muted ? 0 : 0.44;
       master.connect(ctx.destination);
 
-      // Adaptive Music Bus with dynamic warmth filter
-      const musicFilter = ctx.createBiquadFilter();
-      musicFilter.type = 'lowpass';
-      musicFilter.frequency.value = 1800;
-      musicFilter.Q.value = 0.8;
+      // Muffled nocturnal bus for soundtrack carousel playback (~1150 Hz soft low-pass, subdued level)
+      const soundtrackFilter = ctx.createBiquadFilter();
+      soundtrackFilter.type = 'lowpass';
+      soundtrackFilter.frequency.value = 1150;
+      soundtrackFilter.Q.value = 0.65;
 
-      const musicBus = ctx.createGain();
-      musicBus.gain.value = 0.24;
-      musicBus.connect(musicFilter);
-      musicFilter.connect(master);
-
-      // Continuous nocturnal harmonic pad drone (gentle sine + warm triangle)
-      const padGain = ctx.createGain();
-      padGain.gain.value = 0.08;
-      padGain.connect(musicBus);
-
-      const padOsc1 = ctx.createOscillator();
-      padOsc1.type = 'sine';
-      padOsc1.frequency.value = 146.83; // D3
-
-      const padOsc2 = ctx.createOscillator();
-      padOsc2.type = 'triangle';
-      padOsc2.frequency.value = 220.0; // A3
-
-      padOsc1.connect(padGain);
-      padOsc2.connect(padGain);
-      padOsc1.start();
-      padOsc2.start();
+      const soundtrackGain = ctx.createGain();
+      soundtrackGain.gain.value = 0.2;
+      soundtrackGain.connect(soundtrackFilter);
+      soundtrackFilter.connect(master);
 
       // Filtered wind shimmer bed
       const bufLen = ctx.sampleRate * 2;
@@ -198,17 +532,17 @@ export class SoundEngine {
       const stepData = stepBuf.getChannelData(0);
       for (let i = 0; i < stepLen; i++) {
         const env = Math.pow(1 - i / stepLen, 1.8);
-        const grain = Math.random() > 0.86 ? (Math.random() * 2 - 1) * 1.45 : (Math.random() * 2 - 1) * 0.45;
+        const grain =
+          Math.random() > 0.86
+            ? (Math.random() * 2 - 1) * 1.45
+            : (Math.random() * 2 - 1) * 0.45;
         stepData[i] = grain * env;
       }
 
       this.ctx = ctx;
       this.masterGain = master;
-      this.musicBus = musicBus;
-      this.musicFilter = musicFilter;
-      this.padOsc1 = padOsc1;
-      this.padOsc2 = padOsc2;
-      this.padGain = padGain;
+      this.soundtrackFilter = soundtrackFilter;
+      this.soundtrackGain = soundtrackGain;
       this.windSource = windSource;
       this.windFilter = windFilter;
       this.windGain = windGain;
@@ -222,146 +556,46 @@ export class SoundEngine {
       this.flyGain = flyGain;
       this.grassStepBuffer = stepBuf;
       this.initialized = true;
+
+      if (this.wantsAutoplay && !this.userPaused) {
+        void this.tryStartCurrentTrack();
+      }
     } catch {
       // Headless or blocked audio context — fail silently
     }
   }
 
-  public updateAdaptiveMusic(dt: number, mc: MusicContext): void {
-    if (!this.ctx || !this.musicBus || !this.musicFilter || !this.padOsc1 || !this.padOsc2 || !this.padGain) {
-      return;
-    }
+  public updateAmbience(params: {
+    active: boolean;
+    isTitle: boolean;
+    zone: LocationZone;
+    isGusty: boolean;
+    hiddenInNettle: boolean;
+  }): void {
+    if (!this.ctx) return;
     const t = this.ctx.currentTime;
 
-    if (!mc.active) {
-      this.musicBus.gain.setTargetAtTime(0.04, t, 0.25);
-      if (this.windGain) this.windGain.gain.setTargetAtTime(0, t, 0.2);
-      return;
+    // Gentle dynamic muffling when hidden inside nettles or on paused/title screen
+    if (this.soundtrackGain && this.soundtrackFilter) {
+      const targetGain = !params.active ? 0.12 : params.isTitle ? 0.17 : 0.21;
+      const targetCut = params.hiddenInNettle ? 740 : params.isTitle ? 1050 : 1220;
+      this.soundtrackGain.gain.setTargetAtTime(targetGain, t, 0.25);
+      this.soundtrackFilter.frequency.setTargetAtTime(targetCut, t, 0.25);
     }
 
-    // Determine mood: tension vs stealth vs open field vs snag calm vs victory
-    const isDanger =
-      !mc.isTitle &&
-      (mc.waspState === 'investigate' || mc.waspState === 'dive' || mc.fear > 45);
-    const isStealth = !mc.isTitle && mc.hiddenInNettle;
-    const isGusty = !mc.isTitle && mc.weather === 'gusty';
-
-    // Pad harmonic root per location & state
-    let rootHz = 146.83; // D3 (Snag / Title)
-    let fifthHz = 220.0; // A3
-    let filterHz = 1750;
-    let stepInterval = 0.62;
-
-    if (mc.chapter === 'victory') {
-      rootHz = 174.61; // F3 luminous lunar major
-      fifthHz = 261.63; // C4
-      filterHz = 2600;
-      stepInterval = 0.48;
-    } else if (isDanger) {
-      rootHz = 138.59; // C#3 tense
-      fifthHz = 196.0; // G3 tritone tension
-      filterHz = 2200;
-      stepInterval = 0.28;
-    } else if (isStealth) {
-      rootHz = 110.0; // A2 hushed
-      fifthHz = 164.81; // E3
-      filterHz = 620; // Muffled leaf cover acoustic
-      stepInterval = 0.72;
-    } else if (mc.zone === 'field' || mc.zone === 'left_birch' || mc.zone === 'right_birch') {
-      rootHz = 174.61; // F3 open Lydian clearing
-      fifthHz = 261.63; // C4
-      filterHz = 2100;
-      stepInterval = 0.54;
-    } else if (mc.zone === 'stump' || mc.zone === 'hollow') {
-      rootHz = 130.81; // C3 deep hollow resonance
-      fifthHz = 196.0; // G3
-      filterHz = 1150;
-      stepInterval = 0.68;
-    }
-
-    this.musicBus.gain.setTargetAtTime(mc.isTitle ? 0.18 : 0.26, t, 0.2);
-    this.musicFilter.frequency.setTargetAtTime(filterHz, t, 0.22);
-    this.padOsc1.frequency.setTargetAtTime(rootHz, t, 0.45);
-    this.padOsc2.frequency.setTargetAtTime(fifthHz, t, 0.45);
-    this.padGain.gain.setTargetAtTime(isDanger ? 0.12 : 0.08, t, 0.2);
-
-    // Wind ambient volume
     if (this.windGain && this.windFilter) {
-      const targetWind = isGusty ? 0.12 : mc.zone === 'field' ? 0.045 : 0.018;
-      this.windGain.gain.setTargetAtTime(targetWind, t, 0.35);
-      this.windFilter.frequency.setTargetAtTime(isGusty ? 760 : 380, t, 0.4);
+      if (!params.active) {
+        this.windGain.gain.setTargetAtTime(0, t, 0.2);
+      } else {
+        const targetWind = params.isGusty
+          ? 0.115
+          : params.zone === 'field'
+            ? 0.042
+            : 0.016;
+        this.windGain.gain.setTargetAtTime(targetWind, t, 0.35);
+        this.windFilter.frequency.setTargetAtTime(params.isGusty ? 760 : 380, t, 0.4);
+      }
     }
-
-    // Trigger next melodic note
-    this.musicStepAccum += dt;
-    if (this.musicStepAccum >= stepInterval) {
-      this.musicStepAccum = 0;
-      this.playAdaptiveNote(mc, isDanger, isStealth);
-    }
-  }
-
-  private playAdaptiveNote(
-    mc: MusicContext,
-    isDanger: boolean,
-    isStealth: boolean,
-  ): void {
-    if (!this.ctx || !this.musicBus) return;
-    const t = this.ctx.currentTime;
-    const step = this.musicBeatIdx++;
-
-    // Scale palettes per location & state
-    const scales: Record<string, number[]> = {
-      calmLog: [293.66, 349.23, 440.0, 523.25, 659.25, 587.33, 440.0, 392.0], // D Dorian harp
-      fieldLydian: [349.23, 440.0, 523.25, 659.25, 783.99, 659.25, 493.88, 440.0], // F Lydian starlight
-      stumpHollow: [261.63, 311.13, 392.0, 466.16, 392.0, 311.13, 293.66, 261.63], // C Dorian hollow
-      stealthNettle: [220.0, 261.63, 329.63, 293.66, 220.0, 246.94, 329.63, 261.63], // Soft A minor
-      waspDanger: [277.18, 293.66, 392.0, 277.18, 415.3, 392.0, 293.66, 261.63], // Tense ostinato
-      victory: [349.23, 440.0, 523.25, 698.46, 880.0, 783.99, 659.25, 523.25], // Lunar triumph
-    };
-
-    let key = 'calmLog';
-    if (mc.chapter === 'victory') key = 'victory';
-    else if (isDanger) key = 'waspDanger';
-    else if (isStealth) key = 'stealthNettle';
-    else if (mc.zone === 'field' || mc.zone === 'left_birch' || mc.zone === 'right_birch')
-      key = 'fieldLydian';
-    else if (mc.zone === 'stump' || mc.zone === 'hollow') key = 'stumpHollow';
-
-    const scale = scales[key];
-    const freq = scale[step % scale.length];
-
-    // Skip sparse rests for natural breathing phrasing
-    if (!isDanger && step % 5 === 4) return;
-
-    const osc = this.ctx.createOscillator();
-    const overtone = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-
-    osc.type = isDanger ? 'sawtooth' : isStealth ? 'sine' : 'triangle';
-    osc.frequency.setValueAtTime(freq, t);
-
-    overtone.type = 'sine';
-    overtone.frequency.setValueAtTime(freq * (isDanger ? 1.5 : 2.0), t);
-
-    const peak = isDanger ? 0.095 : isStealth ? 0.07 : 0.12;
-    const decay = isDanger ? 0.26 : isStealth ? 0.45 : 0.85;
-
-    g.gain.setValueAtTime(0.001, t);
-    g.gain.linearRampToValueAtTime(peak, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0008, t + decay);
-
-    const overGain = this.ctx.createGain();
-    overGain.gain.value = 0.22;
-
-    osc.connect(g);
-    overtone.connect(overGain);
-    overGain.connect(g);
-    g.connect(this.musicBus);
-
-    osc.start(t);
-    overtone.start(t);
-    osc.stop(t + decay + 0.04);
-    overtone.stop(t + decay + 0.04);
   }
 
   public updateWaspBuzz(params: {
@@ -398,19 +632,37 @@ export class SoundEngine {
     isCaught: boolean;
     elapsed: number;
   }): void {
-    if (!this.ctx || !this.flyGain || !this.flyFilter || !this.flyOsc1 || !this.flyOsc2) {
+    if (
+      !this.ctx ||
+      !this.flyGain ||
+      !this.flyFilter ||
+      !this.flyOsc1 ||
+      !this.flyOsc2
+    ) {
       return;
     }
     const t = this.ctx.currentTime;
-    if (!params.active || !Number.isFinite(params.nearestDistance) || params.nearestDistance > 13.5) {
+    if (
+      !params.active ||
+      !Number.isFinite(params.nearestDistance) ||
+      params.nearestDistance > 13.5
+    ) {
       this.flyGain.gain.setTargetAtTime(0, t, 0.14);
       return;
     }
 
-    const proximity = Math.max(0, Math.min(1, 1 - (params.nearestDistance - 1.1) / 12.4));
-    const flutter = 1 + Math.sin(params.elapsed * (params.isCaught ? 36 : 19)) * 0.18;
-    const gain = proximity * proximity * (params.isCaught ? 0.068 : 0.048) * flutter;
-    const baseFreq = (params.isCaught ? 242 : 212) + proximity * 26 + Math.sin(params.elapsed * 14) * 6;
+    const proximity = Math.max(
+      0,
+      Math.min(1, 1 - (params.nearestDistance - 1.1) / 12.4),
+    );
+    const flutter =
+      1 + Math.sin(params.elapsed * (params.isCaught ? 36 : 19)) * 0.18;
+    const gain =
+      proximity * proximity * (params.isCaught ? 0.068 : 0.048) * flutter;
+    const baseFreq =
+      (params.isCaught ? 242 : 212) +
+      proximity * 26 +
+      Math.sin(params.elapsed * 14) * 6;
 
     this.flyGain.gain.setTargetAtTime(gain, t, 0.07);
     this.flyFilter.frequency.setTargetAtTime(480 + proximity * 520, t, 0.08);
@@ -458,7 +710,6 @@ export class SoundEngine {
     this.waspGain?.gain.setTargetAtTime(0, t, 0.05);
     this.flyGain?.gain.setTargetAtTime(0, t, 0.05);
     this.windGain?.gain.setTargetAtTime(0, t, 0.05);
-    this.musicBus?.gain.setTargetAtTime(0.03, t, 0.08);
   }
 
   public playJump(): void {
@@ -629,13 +880,21 @@ export class SoundEngine {
   }
 
   public dispose(): void {
+    this.disposed = true;
+    this.unbindGestureUnlock();
     try {
+      this.customBlobUrls.forEach((u) => URL.revokeObjectURL(u));
+      this.customBlobUrls.clear();
+      if (this.audioEl) {
+        this.audioEl.pause();
+        this.audioEl.removeAttribute('src');
+        this.audioEl.load();
+      }
+      this.audioSourceNode?.disconnect();
       this.waspOsc?.stop();
       this.waspSubOsc?.stop();
       this.flyOsc1?.stop();
       this.flyOsc2?.stop();
-      this.padOsc1?.stop();
-      this.padOsc2?.stop();
       this.windSource?.stop();
       void this.ctx?.close();
     } catch {
