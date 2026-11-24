@@ -1,0 +1,8 @@
+{
+  "name": "Copilot Orb Weaver: Узоры под луной",
+  "description": "Поэтическое 3D-приключение про паука Павутина: тканьё узоров при лунном свете, охота на глупых мух, прятки от ос в крапиве и восстановление Великого Ткацкого Узора.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
