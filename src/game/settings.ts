@@ -13,6 +13,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
   moveLeft: ['KeyA'],
   moveRight: ['KeyD'],
   jump: ['Space', 'MouseRight'],
+  dash: ['ShiftLeft', 'ShiftRight'],
   interact: ['KeyE'],
   harvest: ['KeyF'],
   grapple: ['KeyQ'],
@@ -26,8 +27,13 @@ export const DEFAULT_SETTINGS: UserSettings = {
   difficulty: 'normal',
   graphics: 'high',
   touchControlsMode: 'auto',
+  uiScale: 1,
+  colorblindMode: false,
+  reducedEffects: false,
   bindings: cloneBindings(DEFAULT_BINDINGS),
 };
+
+export const VALID_UI_SCALES = [0.9, 1, 1.15, 1.3] as const;
 
 const STORAGE_KEY = 'orb_weaver_settings_v2';
 
@@ -38,6 +44,7 @@ export function cloneBindings(b: ControlBindings): ControlBindings {
     moveLeft: [...b.moveLeft],
     moveRight: [...b.moveRight],
     jump: [...b.jump],
+    dash: [...b.dash],
     interact: [...b.interact],
     harvest: [...b.harvest],
     grapple: [...b.grapple],
@@ -74,10 +81,12 @@ const VALID_DIFFICULTIES: Set<string> = new Set<DifficultyLevel>([
 ]);
 
 const VALID_GRAPHICS: Set<string> = new Set<GraphicsQuality>([
+  'lowest',
   'low',
   'medium',
   'high',
   'ultra',
+  'cinematic',
 ]);
 
 export function loadUserSettings(): UserSettings {
@@ -115,6 +124,16 @@ export function loadUserSettings(): UserSettings {
         ? parsed.touchControlsMode
         : 'auto';
 
+    const uiScale =
+      parsed.uiScale === 0.9 ||
+      parsed.uiScale === 1 ||
+      parsed.uiScale === 1.15 ||
+      parsed.uiScale === 1.3
+        ? parsed.uiScale
+        : 1;
+    const colorblindMode = Boolean(parsed.colorblindMode);
+    const reducedEffects = Boolean(parsed.reducedEffects);
+
     const bindings = cloneBindings(DEFAULT_BINDINGS);
     if (parsed.bindings && typeof parsed.bindings === 'object') {
       (Object.keys(DEFAULT_BINDINGS) as InputAction[]).forEach((act) => {
@@ -130,6 +149,9 @@ export function loadUserSettings(): UserSettings {
       difficulty,
       graphics,
       touchControlsMode,
+      uiScale,
+      colorblindMode,
+      reducedEffects,
       bindings,
     };
   } catch {

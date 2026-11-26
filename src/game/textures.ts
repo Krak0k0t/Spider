@@ -18,6 +18,11 @@ export interface ProceduralTextureSet {
   rockNormal: THREE.CanvasTexture;
   rockRoughness: THREE.CanvasTexture;
   rockAo: THREE.CanvasTexture;
+  mossyRockMap: THREE.CanvasTexture;
+  mossyRockNormal: THREE.CanvasTexture;
+  mossyRockRoughness: THREE.CanvasTexture;
+  chitinMicroScratchMap: THREE.CanvasTexture;
+  setaeHairMap: THREE.CanvasTexture;
   rockSpriteMap: THREE.CanvasTexture;
   rockSpriteAlpha: THREE.CanvasTexture;
   mossPatchMap: THREE.CanvasTexture;
@@ -46,6 +51,8 @@ export interface ProceduralTextureSet {
   spiderChitinMap: THREE.CanvasTexture;
   spiderChitinNormal: THREE.CanvasTexture;
   uspokhChitinMap: THREE.CanvasTexture;
+  spiderLegBandMap: THREE.CanvasTexture;
+  spiderLegBandNormal: THREE.CanvasTexture;
   waspScaleMap: THREE.CanvasTexture;
   waspScaleNormal: THREE.CanvasTexture;
   waspWingMap: THREE.CanvasTexture;
@@ -502,6 +509,133 @@ export function createProceduralTextures(
   const rockRoughness = configureTexture(new THREE.CanvasTexture(rockRoughC), false, anisotropy, 2, 2);
   const rockAo = buildAoFromHeights(rockHeights, rockSize, 0.95, anisotropy, 2, 2);
   created.push(rockMap, rockNormal, rockRoughness, rockAo);
+
+  // 4a. Mossy Foreground Stone Texture (Green Noise Moss + Damp Stone Fissures for clearing boulders)
+  const [mossRockColorC, mrc] = createCanvas(rockSize);
+  const [mossRockRoughC, mrr] = createCanvas(rockSize);
+  const mrImg = mrc.createImageData(rockSize, rockSize);
+  const mrrImg = mrr.createImageData(rockSize, rockSize);
+  const mossRockHeights = new Float32Array(rockSize * rockSize);
+  const fbmStoneMossBroad = makeFbm(1123, 5);
+  const fbmStoneMossTuft = makeFbm(1279, 14);
+  for (let y = 0; y < rockSize; y++) {
+    for (let x = 0; x < rockSize; x++) {
+      const u = x / rockSize;
+      const v = y / rockSize;
+      const idx = (y * rockSize + x) * 4;
+      const stoneH = rockHeights[y * rockSize + x];
+      const broadMoss = fbmStoneMossBroad(u, v);
+      const tuftMoss = fbmStoneMossTuft(u + 0.13, v + 0.29);
+      const fine = microNoise(u * 7, v * 7);
+      // Green noise spreads in pockets, denser along crevices and damp patches
+      const pocketDrive = broadMoss * 0.62 + tuftMoss * 0.38 + (1 - stoneH) * 0.18;
+      const mossMask = Math.max(0, Math.min(1, (pocketDrive - 0.52) * 3.6));
+      const lushness = tuftMoss * 0.65 + fine * 0.35;
+
+      const mossR = 24 + lushness * 26 + fine * 10;
+      const mossG = 66 + lushness * 48 + fine * 18;
+      const mossB = 28 + lushness * 20 + fine * 8;
+
+      mrImg.data[idx] = Math.round(rImg.data[idx] + (mossR - rImg.data[idx]) * mossMask);
+      mrImg.data[idx + 1] = Math.round(rImg.data[idx + 1] + (mossG - rImg.data[idx + 1]) * mossMask);
+      mrImg.data[idx + 2] = Math.round(rImg.data[idx + 2] + (mossB - rImg.data[idx + 2]) * mossMask);
+      mrImg.data[idx + 3] = 255;
+
+      mossRockHeights[y * rockSize + x] = Math.min(
+        1,
+        stoneH * (1 - mossMask * 0.25) + mossMask * (0.28 + lushness * 0.24),
+      );
+      const roughMoss = Math.round((0.92 + fine * 0.06) * 255);
+      const roughStone = rrImg.data[idx];
+      const rMix = Math.round(roughStone + (roughMoss - roughStone) * mossMask);
+      mrrImg.data[idx] = rMix;
+      mrrImg.data[idx + 1] = rMix;
+      mrrImg.data[idx + 2] = rMix;
+      mrrImg.data[idx + 3] = 255;
+    }
+  }
+  mrc.putImageData(mrImg, 0, 0);
+  mrr.putImageData(mrrImg, 0, 0);
+  // Extra fine green organic moss speckles baked over the stone face
+  const randMossSpeck = seededRandom(1447);
+  for (let i = 0; i < 900; i++) {
+    const mx = randMossSpeck() * rockSize;
+    const my = randMossSpeck() * rockSize;
+    const u = mx / rockSize;
+    const v = my / rockSize;
+    if (fbmStoneMossBroad(u, v) > 0.48) {
+      const r = 1.0 + randMossSpeck() * 2.8;
+      mrc.fillStyle =
+        randMossSpeck() > 0.35
+          ? `rgba(${34 + Math.round(randMossSpeck() * 26)}, ${86 + Math.round(randMossSpeck() * 44)}, ${36 + Math.round(randMossSpeck() * 22)}, 0.55)`
+          : 'rgba(108, 134, 64, 0.45)';
+      mrc.beginPath();
+      mrc.arc(mx, my, r, 0, Math.PI * 2);
+      mrc.fill();
+    }
+  }
+  const mossyRockMap = configureTexture(new THREE.CanvasTexture(mossRockColorC), true, anisotropy, 2, 2);
+  const mossyRockNormal = buildNormalFromHeights(mossRockHeights, rockSize, 4.6, anisotropy, 2, 2);
+  const mossyRockRoughness = configureTexture(new THREE.CanvasTexture(mossRockRoughC), false, anisotropy, 2, 2);
+  created.push(mossyRockMap, mossyRockNormal, mossyRockRoughness);
+
+  // 4c. Procedural Chitin Micro-Scratch RoughnessMap & Sensory Setae Hair Sprite
+  const scratchSize = 256;
+  const [scratchC, scc] = createCanvas(scratchSize);
+  const scratchImg = scc.createImageData(scratchSize, scratchSize);
+  const fbmChitinWear = makeFbm(1607, 9);
+  for (let y = 0; y < scratchSize; y++) {
+    for (let x = 0; x < scratchSize; x++) {
+      const u = x / scratchSize;
+      const v = y / scratchSize;
+      const idx = (y * scratchSize + x) * 4;
+      const wear = fbmChitinWear(u, v);
+      const val = Math.round((0.28 + wear * 0.34) * 255);
+      scratchImg.data[idx] = val;
+      scratchImg.data[idx + 1] = val;
+      scratchImg.data[idx + 2] = val;
+      scratchImg.data[idx + 3] = 255;
+    }
+  }
+  scc.putImageData(scratchImg, 0, 0);
+  const randScratch = seededRandom(1777);
+  for (let i = 0; i < 520; i++) {
+    const sx = randScratch() * scratchSize;
+    const sy = randScratch() * scratchSize;
+    const len = 4 + randScratch() * 18;
+    const ang = (randScratch() - 0.5) * 1.1 + 0.45;
+    scc.strokeStyle =
+      randScratch() > 0.25 ? 'rgba(220, 220, 220, 0.34)' : 'rgba(248, 248, 248, 0.5)';
+    scc.lineWidth = 0.6 + randScratch() * 0.9;
+    scc.beginPath();
+    scc.moveTo(sx, sy);
+    scc.lineTo(sx + Math.cos(ang) * len, sy + Math.sin(ang) * len);
+    scc.stroke();
+  }
+  const chitinMicroScratchMap = configureTexture(new THREE.CanvasTexture(scratchC), false, anisotropy, 2, 2);
+  created.push(chitinMicroScratchMap);
+
+  const [hairC, hc] = createCanvas(64);
+  hc.clearRect(0, 0, 64, 64);
+  const hGrad = hc.createRadialGradient(32, 34, 2, 32, 32, 28);
+  hGrad.addColorStop(0, 'rgba(235, 244, 255, 0.95)');
+  hGrad.addColorStop(0.35, 'rgba(195, 218, 248, 0.45)');
+  hGrad.addColorStop(1, 'rgba(170, 196, 232, 0)');
+  hc.fillStyle = hGrad;
+  hc.beginPath();
+  hc.arc(32, 32, 28, 0, Math.PI * 2);
+  hc.fill();
+  hc.strokeStyle = 'rgba(245, 250, 255, 0.85)';
+  hc.lineCap = 'round';
+  hc.lineWidth = 2.0;
+  for (let k = -2; k <= 2; k++) {
+    hc.beginPath();
+    hc.moveTo(32 + k * 4, 48);
+    hc.quadraticCurveTo(32 + k * 7, 28, 32 + k * 10, 8 + Math.abs(k) * 3);
+    hc.stroke();
+  }
+  const setaeHairMap = configureTexture(new THREE.CanvasTexture(hairC), true, anisotropy, 1, 1, true);
+  created.push(setaeHairMap);
 
   // 4b. Distant Fractured Boulder Billboard Sprite (for Aggressive Rock LOD Level 2)
   const [rsColorC, rsc] = createCanvas(128);
@@ -1125,36 +1259,69 @@ export function createProceduralTextures(
   const canopyLeafAlpha = configureTexture(new THREE.CanvasTexture(canAlphaC), false, anisotropy, 1, 1, true);
   created.push(canopyLeafMap, canopyLeafAlpha);
 
-  // 12. Spider Textures + Normal Map
+  // 12. Spider Textures + Normal Map (512x512 High-Detail Chitin, Oak-Leaf Folia Chevrons, Sigilla & Pores)
   const makeSpiderTexture = (isElder: boolean) => {
-    const spSize = 256;
+    const spSize = 512;
     const [spColorC, spc] = createCanvas(spSize);
     const [spBumpC, spb] = createCanvas(spSize);
-    const fbmSpider = makeFbm(isElder ? 997 : 991, 8);
+    const fbmSpider = makeFbm(isElder ? 997 : 991, 9);
+    const fbmFine = makeFbm(isElder ? 983 : 977, 18);
     const spImg = spc.createImageData(spSize, spSize);
     const spBImg = spb.createImageData(spSize, spSize);
+    const sigillaPts: [number, number][] = [
+      [0.43, 0.35], [0.57, 0.35],
+      [0.41, 0.50], [0.59, 0.50],
+      [0.44, 0.65], [0.56, 0.65],
+    ];
     for (let y = 0; y < spSize; y++) {
       for (let x = 0; x < spSize; x++) {
         const u = x / spSize;
         const v = y / spSize;
         const idx = (y * spSize + x) * 4;
         const n = fbmSpider(u, v);
+        const nf = fbmFine(u, v);
+        const micro = Math.sin(u * 165 + n * 7) * Math.cos(v * 165) * 0.045;
+        // Intricate oak-leaf orb-weaver dorsal folium + silver-moonlight cross & chevron filigree
+        const du = Math.abs(u - 0.5);
+        const oakWave = 0.14 + 0.045 * Math.sin(v * Math.PI * 10);
+        const foliumMask = Math.exp(-Math.pow((du / oakWave), 2) * 1.4);
         const chevron =
-          Math.exp(-Math.pow((u - 0.5) * 4.5, 2)) *
-          (0.5 + 0.5 * Math.sin(v * Math.PI * 10 - Math.abs(u - 0.5) * 18));
-        const highlight = Math.max(0, chevron - 0.52) * 2.25;
+          Math.exp(-Math.pow(du * 4.4, 2)) *
+          (0.5 + 0.5 * Math.sin(v * Math.PI * 12 - du * 24));
+        const crossSpeck =
+          Math.exp(-Math.pow((du - 0.06) * 28, 2)) *
+          Math.exp(-Math.pow((v - 0.44) * 16, 2));
+        const foliaEdge =
+          Math.exp(-Math.pow((du - oakWave) * 22, 2)) *
+          Math.max(0, 0.6 + 0.4 * Math.sin(v * Math.PI * 12));
+        const highlight =
+          Math.max(0, chevron - 0.44) * 2.15 +
+          foliaEdge * 0.52 +
+          crossSpeck * 0.65 +
+          foliumMask * 0.14;
+        const warmFlank = Math.max(0, 1 - foliumMask) * (0.35 + nf * 0.65);
+
+        // Recessed dorsal sigilla muscle-attachment pits
+        let sigillaPit = 0;
+        for (const [su, sv] of sigillaPts) {
+          const d2 = (u - su) * (u - su) + (v - sv) * (v - sv);
+          if (d2 < 0.00055) {
+            sigillaPit += 1 - d2 / 0.00055;
+          }
+        }
+
         if (isElder) {
-          spImg.data[idx] = Math.min(255, Math.round(52 + n * 42 + highlight * 105));
-          spImg.data[idx + 1] = Math.min(255, Math.round(56 + n * 42 + highlight * 108));
-          spImg.data[idx + 2] = Math.min(255, Math.round(68 + n * 48 + highlight * 120));
+          spImg.data[idx] = Math.max(12, Math.min(255, Math.round(54 + n * 44 + highlight * 112 - sigillaPit * 28)));
+          spImg.data[idx + 1] = Math.max(14, Math.min(255, Math.round(60 + n * 44 + highlight * 116 - sigillaPit * 28)));
+          spImg.data[idx + 2] = Math.max(18, Math.min(255, Math.round(74 + n * 52 + highlight * 128 - sigillaPit * 24)));
         } else {
-          spImg.data[idx] = Math.min(255, Math.round(30 + n * 28 + highlight * 94));
-          spImg.data[idx + 1] = Math.min(255, Math.round(33 + n * 26 + highlight * 88));
-          spImg.data[idx + 2] = Math.min(255, Math.round(45 + n * 30 + highlight * 112));
+          spImg.data[idx] = Math.max(10, Math.min(255, Math.round(28 + n * 30 + warmFlank * 24 + highlight * 96 - sigillaPit * 22)));
+          spImg.data[idx + 1] = Math.max(11, Math.min(255, Math.round(31 + n * 28 + warmFlank * 16 + highlight * 94 - sigillaPit * 22)));
+          spImg.data[idx + 2] = Math.max(16, Math.min(255, Math.round(45 + n * 34 + warmFlank * 8 + highlight * 122 - sigillaPit * 18)));
         }
         spImg.data[idx + 3] = 255;
 
-        const bv = Math.min(255, Math.round(90 + n * 120 + highlight * 38));
+        const bv = Math.max(20, Math.min(255, Math.round(92 + (n + micro) * 124 + highlight * 38 - sigillaPit * 66)));
         spBImg.data[idx] = bv;
         spBImg.data[idx + 1] = bv;
         spBImg.data[idx + 2] = bv;
@@ -1164,30 +1331,31 @@ export function createProceduralTextures(
     spc.putImageData(spImg, 0, 0);
     spb.putImageData(spBImg, 0, 0);
     const randSp = seededRandom(isElder ? 521 : 515);
-    for (let i = 0; i < 950; i++) {
+    for (let i = 0; i < 2800; i++) {
       const sx = randSp() * spSize;
       const sy = randSp() * spSize;
-      const len = 4 + randSp() * 9;
+      const len = 4 + randSp() * 13;
       spc.strokeStyle = isElder
-        ? 'rgba(205, 218, 238, 0.28)'
+        ? 'rgba(218, 232, 248, 0.3)'
         : randSp() > 0.3
-          ? 'rgba(135, 152, 184, 0.24)'
-          : 'rgba(16, 18, 26, 0.42)';
-      spc.lineWidth = 1;
+          ? 'rgba(154, 178, 218, 0.28)'
+          : 'rgba(14, 15, 22, 0.46)';
+      spc.lineWidth = 1.05;
       spc.beginPath();
       spc.moveTo(sx, sy);
-      spc.lineTo(sx + (randSp() - 0.5) * 2.2, sy + len);
+      spc.lineTo(sx + (randSp() - 0.5) * 3.0, sy + len);
       spc.stroke();
 
-      spb.strokeStyle = 'rgba(240, 240, 240, 0.38)';
+      spb.strokeStyle = 'rgba(242, 244, 248, 0.42)';
+      spb.lineWidth = 0.95;
       spb.beginPath();
       spb.moveTo(sx, sy);
-      spb.lineTo(sx, sy + len);
+      spb.lineTo(sx + (randSp() - 0.5) * 1.3, sy + len);
       spb.stroke();
     }
     return {
       colorTex: configureTexture(new THREE.CanvasTexture(spColorC), true, anisotropy, 1, 1),
-      normalTex: buildNormalFromCanvas(spBumpC, 2.0, anisotropy, 1, 1),
+      normalTex: buildNormalFromCanvas(spBumpC, 2.45, anisotropy, 1, 1),
     };
   };
   const pavutinTex = makeSpiderTexture(false);
@@ -1195,7 +1363,52 @@ export function createProceduralTextures(
   const spiderChitinMap = pavutinTex.colorTex;
   const spiderChitinNormal = pavutinTex.normalTex;
   const uspokhChitinMap = uspokhTex.colorTex;
-  created.push(spiderChitinMap, spiderChitinNormal, uspokhChitinMap, uspokhTex.normalTex);
+
+  // 12b. Annular Ringed Spider Leg Chitin Map + Ribbed Normal (256x256)
+  const legSize = 256;
+  const [legC, lgc] = createCanvas(legSize);
+  const [legBumpC, lgb] = createCanvas(legSize);
+  const fbmLeg = makeFbm(967, 10);
+  const legImg = lgc.createImageData(legSize, legSize);
+  const legBImg = lgb.createImageData(legSize, legSize);
+  for (let y = 0; y < legSize; y++) {
+    for (let x = 0; x < legSize; x++) {
+      const u = x / legSize;
+      const v = y / legSize;
+      const idx = (y * legSize + x) * 4;
+      const n = fbmLeg(u, v);
+      // Dark chitinous annulations along leg length (v) + subtle longitudinal ridges along u
+      const ringWave = 0.5 + 0.5 * Math.sin(v * Math.PI * 6 + n * 0.9);
+      const isDarkBand = Math.pow(ringWave, 2.4);
+      const longRib = Math.sin(u * Math.PI * 24) * 0.14;
+      const baseR = 96 - isDarkBand * 62 + n * 28;
+      const baseG = 72 - isDarkBand * 44 + n * 22;
+      const baseB = 56 - isDarkBand * 28 + n * 20;
+      legImg.data[idx] = Math.max(14, Math.min(255, Math.round(baseR)));
+      legImg.data[idx + 1] = Math.max(12, Math.min(255, Math.round(baseG)));
+      legImg.data[idx + 2] = Math.max(14, Math.min(255, Math.round(baseB)));
+      legImg.data[idx + 3] = 255;
+
+      const bh = Math.max(20, Math.min(255, Math.round(120 + n * 76 + longRib * 50 - isDarkBand * 36)));
+      legBImg.data[idx] = bh;
+      legBImg.data[idx + 1] = bh;
+      legBImg.data[idx + 2] = bh;
+      legBImg.data[idx + 3] = 255;
+    }
+  }
+  lgc.putImageData(legImg, 0, 0);
+  lgb.putImageData(legBImg, 0, 0);
+  const spiderLegBandMap = configureTexture(new THREE.CanvasTexture(legC), true, anisotropy, 1, 1);
+  const spiderLegBandNormal = buildNormalFromCanvas(legBumpC, 1.9, anisotropy, 1, 1);
+
+  created.push(
+    spiderChitinMap,
+    spiderChitinNormal,
+    uspokhChitinMap,
+    uspokhTex.normalTex,
+    spiderLegBandMap,
+    spiderLegBandNormal,
+  );
 
   // 13. Wasp Scales + Normal Map
   const wSize = 256;
@@ -1599,6 +1812,11 @@ export function createProceduralTextures(
     rockNormal,
     rockRoughness,
     rockAo,
+    mossyRockMap,
+    mossyRockNormal,
+    mossyRockRoughness,
+    chitinMicroScratchMap,
+    setaeHairMap,
     rockSpriteMap,
     rockSpriteAlpha,
     mossPatchMap,
@@ -1627,6 +1845,8 @@ export function createProceduralTextures(
     spiderChitinMap,
     spiderChitinNormal,
     uspokhChitinMap,
+    spiderLegBandMap,
+    spiderLegBandNormal,
     waspScaleMap,
     waspScaleNormal,
     waspWingMap,

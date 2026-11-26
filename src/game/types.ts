@@ -53,7 +53,18 @@ export type LanguageCode =
 
 export type DifficultyLevel = 'story' | 'normal' | 'hard' | 'eclipse';
 
-export type GraphicsQuality = 'low' | 'medium' | 'high' | 'ultra';
+export type GraphicsQuality =
+  | 'lowest'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'ultra'
+  | 'cinematic';
+
+export interface ExternalEngineState {
+  isMobile: boolean;
+  inputMode: 'touch' | 'keyboard';
+}
 
 export type InputAction =
   | 'moveForward'
@@ -61,6 +72,7 @@ export type InputAction =
   | 'moveLeft'
   | 'moveRight'
   | 'jump'
+  | 'dash'
   | 'interact'
   | 'harvest'
   | 'grapple'
@@ -75,6 +87,9 @@ export interface UserSettings {
   difficulty: DifficultyLevel;
   graphics: GraphicsQuality;
   touchControlsMode: 'auto' | 'on' | 'off';
+  uiScale: 0.9 | 1 | 1.15 | 1.3;
+  colorblindMode: boolean;
+  reducedEffects: boolean;
   bindings: ControlBindings;
 }
 
@@ -125,6 +140,8 @@ export interface WovenPattern {
   strength: number;
   lureRadius: number;
   targetSpecies: FlySpecies;
+  durability: number;
+  maxDurability: number;
   createdAt: number;
 }
 
@@ -151,6 +168,9 @@ export type WhisperId =
   | 'great_victory'
   | 'tearbearer_caught'
   | 'fly_caught'
+  | 'aerial_catch'
+  | 'web_mended'
+  | 'silk_bridge'
   | 'wasp_incoming'
   | 'wasp_perch'
   | 'wasp_lured'
@@ -158,15 +178,36 @@ export type WhisperId =
   | 'wasp_departed_quick'
   | 'wasp_investigate'
   | 'wasp_knockback'
+  | 'wasp_dodged'
+  | 'wasp_lost_sight'
+  | 'still_stealth'
   | 'hollow_need_grapple'
   | 'birch_wind_snap'
-  | 'jump_hint';
+  | 'jump_hint'
+  | 'dew_quest_progress'
+  | 'dew_quest_complete'
+  | 'wasp_web_snared';
 
 export interface WhisperParams {
   count?: number;
   total?: number;
   amount?: number;
   missing?: number;
+}
+
+export interface DewQuestState {
+  fatbellyTriangle: boolean;
+  nimbleStar: boolean;
+  greenieCircle: boolean;
+  completed: boolean;
+}
+
+export interface RadarBlip {
+  id: string;
+  kind: 'wasp' | 'anchor' | 'fly' | 'nettle' | 'decoy';
+  x: number; // -1..1 camera-relative right
+  z: number; // -1..1 camera-relative down (positive toward bottom of radar)
+  active?: boolean;
 }
 
 export interface HudSnapshot {
@@ -181,15 +222,24 @@ export interface HudSnapshot {
   fear: number; // 0..100
   hiddenInNettle: boolean;
   isGrounded: boolean;
+  onSilkBridge: boolean;
+  dashCooldownSec: number;
   selectedMode: PatternShape;
   hasGrapple: boolean;
   waspState: WaspState;
   waspDistance: number;
+  waspBearingDeg: number | null;
+  waspAlertLevel: number; // 0..1
+  waspWebSlowed: boolean;
   weather: WeatherState;
+  windWarning: boolean;
   windStrength: number; // 0..1
   patternsCount: number;
   fliesCaught: number;
+  aerialCatches: number;
   caughtSpecies: Record<FlySpecies, number>;
+  dewQuest: DewQuestState;
+  unlockedLoreIds: string[];
   greatStrandsDone: number;
   greatStrandsTotal: number;
   greatAnchorsDone: {
@@ -208,10 +258,14 @@ export interface HudSnapshot {
   activeThreadFromId: string | null;
   activeThreadFromLabel: string | null;
   canClosePattern: boolean;
+  canRepairPattern: boolean;
   canHarvestFly: boolean;
   combatStance: boolean;
   canGrappleId: string | null;
   canGrappleLabel: string | null;
+  spiderScreenPos?: { xPct: number; yPct: number } | null;
+  radarBlips?: RadarBlip[];
+  gazeWebShape?: PatternShape | null;
   musicTrackIndex: number;
   musicTrackId: string;
   musicIsPlaying: boolean;

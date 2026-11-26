@@ -1,6 +1,7 @@
 import type {
   ChapterPhase,
   DifficultyLevel,
+  FlySpecies,
   GraphicsQuality,
   InputAction,
   LanguageCode,
@@ -56,23 +57,35 @@ export interface TranslationBundle {
   leftBirchLabel: string;
   rightBirchLabel: string;
   windGusty: string;
+  windRising: string;
   windCalm: string;
   hiddenInNettle: string;
   tremorLabel: string;
   waspDistUnit: string;
   airborneTag: string;
+  silkBridgeTag: string;
 
   // Context prompts
   promptHarvest: string;
   promptClosePattern: string;
+  promptRepairWeb: string;
   promptExtendTo: string;
   promptAttachFrom: string;
   promptGrapple: string;
   promptThreadActive: string;
   grappleBtnLabel: string;
   jumpBtnLabel: string;
+  dashBtnLabel: string;
+  dashReadyTag: string;
   weaveBtnLabel: string;
   harvestBtnLabel: string;
+  waspAlerts: {
+    patrol: string;
+    perch: string;
+    investigate: string;
+    dive: string;
+    lured: string;
+  };
 
   // Patterns
   patterns: Record<PatternShape, { label: string; hint: string }>;
@@ -147,6 +160,39 @@ export interface TranslationBundle {
 
   // Anchors
   anchors: Record<string, string>;
+
+  // Journal / Quests / Bestiary / Lore
+  tabOverview: string;
+  tabJournal: string;
+  questSectionTitle: string;
+  dewQuestTitle: string;
+  dewQuestDoneTag: string;
+  dewQuestSteps: {
+    fatbellyTriangle: string;
+    nimbleStar: string;
+    greenieCircle: string;
+  };
+  dewQuestRewardHint: string;
+  bestiaryTitle: string;
+  speciesLabels: Record<FlySpecies, string>;
+  loreSectionTitle: string;
+  loreLockedHint: string;
+  loreEntries: Record<string, { title: string; body: string }>;
+
+  // Accessibility & Organic UI
+  tabAccessibility: string;
+  uiScaleLabel: string;
+  colorblindLabel: string;
+  colorblindDesc: string;
+  reducedEffectsLabel: string;
+  reducedEffectsDesc: string;
+  enabledTag: string;
+  disabledTag: string;
+  journalToggleBtn: string;
+  radarTitle: string;
+  spiderSenseAlert: string;
+  patternWheelLabel: string;
+  abilitiesMenuLabel: string;
 }
 
 const EN: TranslationBundle = {
@@ -157,7 +203,7 @@ const EN: TranslationBundle = {
   startBtn: 'Begin Weaving',
   settingsBtn: 'Settings',
   controlsHint:
-    'WASD Move · Space / RMB Jump · Drag Mouse Look · E / LMB Weave · F Harvest · Q Grapple · 1–4 Pattern · Esc Pause',
+    'WASD Move · Space / RMB Jump · Shift Dodge · Drag Look · E / LMB Weave · F Catch · Q Grapple · 1–4 Pattern · Esc Pause',
 
   silkLabel: 'Silk',
   composureLabel: 'Composure',
@@ -166,22 +212,34 @@ const EN: TranslationBundle = {
   leftBirchLabel: 'West Birch',
   rightBirchLabel: 'East Birch',
   windGusty: 'Gusting Wind',
+  windRising: 'Wind Rising…',
   windCalm: 'Calm Night',
   hiddenInNettle: 'Hidden in Nettles',
   tremorLabel: 'Tremor',
   waspDistUnit: 'm',
   airborneTag: 'Leaping',
+  silkBridgeTag: 'On Silk',
 
-  promptHarvest: '[{k}] Catch trapped fly & gather silk',
+  promptHarvest: '[{k}] Catch fly & gather silk',
   promptClosePattern: '[{k}] Close pattern at “{anchor}”',
+  promptRepairWeb: '[{k}] Mend worn web at “{anchor}” (3 silk)',
   promptExtendTo: '[{k}] Stretch silk to: {anchor}',
   promptAttachFrom: '[{k}] Anchor silk at: {anchor}',
   promptGrapple: '[{k}] Silk-Grapple → {anchor}',
   promptThreadActive: 'Thread trailing from “{anchor}” — approach another twig',
   grappleBtnLabel: 'Grapple',
   jumpBtnLabel: 'Jump',
+  dashBtnLabel: 'Dodge',
+  dashReadyTag: 'Scuttle Ready',
   weaveBtnLabel: 'Weave',
   harvestBtnLabel: 'Gather',
+  waspAlerts: {
+    patrol: 'Wasp Patrolling',
+    perch: 'Wasp Perched — Safe!',
+    investigate: 'Searching — Freeze or Hide!',
+    dive: 'DIVING — Dodge [{k}]!',
+    lured: 'Lured to Decoy!',
+  },
 
   patterns: {
     triangle: {
@@ -256,16 +314,25 @@ const EN: TranslationBundle = {
     great_victory: 'The First Weaving Pattern closes in silver radiance! The Shadow-Stitch yields.',
     tearbearer_caught: 'Tearbearer caught! +{amount} silk. First Field lies ahead.',
     fly_caught: 'Foolish flyer caught! +{amount} silk added.',
+    aerial_catch: 'Mid-air ambush! Caught on the wing (+{amount} silk)!',
+    web_mended: 'Fresh dew binds the worn pattern back into lunar tautness.',
+    silk_bridge: 'Light as silver dew — you can walk straight along your own spun threads!',
     wasp_incoming: 'Buzzing wings! Khryazh-Syakaya approaches! Take cover in nettles, wait for her to perch, then weave a Decoy (4).',
     wasp_perch: 'Khryazh-Syakaya has perched on a branch! Now weave a Decoy Web (4)!',
     wasp_lured: 'Ha! The fierce wasp mistook our pattern for a rival nest!',
     wasp_departed_grapple: 'She flew off empty-handed! Silk-Grapple unlocked (Q). Anchor 6 bearing strands from the 3 Old Anchors and gather 100 silk!',
     wasp_departed_quick: 'Khryazh-Syakaya flew away. Move swiftly!',
-    wasp_investigate: 'She heard leaves rustle — hold still inside the nettles!',
-    wasp_knockback: 'Her wing-blast knocked you into the grass! Regroup in the nettles and spin a Decoy.',
+    wasp_investigate: 'She heard leaves rustle — hold completely still or slip into nettles!',
+    wasp_knockback: 'Her wing-blast grazed you! Scuttle away with Shift and hide in the nettles.',
+    wasp_dodged: 'Clean dodge! You slipped out of her dive (+5 silk)!',
+    wasp_lost_sight: 'You held still enough — Khryazh-Syakaya lost your scent and flew back.',
+    still_stealth: 'Freeze still or press Shift to dodge when Khryazh-Syakaya locks on.',
     hollow_need_grapple: 'The Hollow is too deep — unlock Silk-Grapple in Chapter 2 first.',
     birch_wind_snap: 'A sharp gust snapped the long strand! Brace the West Birch with a Triangle web or wait for calm.',
     jump_hint: 'Use Space or Right Click to leap onto logs and clear obstacles.',
+    dew_quest_progress: 'Moon-dew sample gathered ({count}/3). Catch all three fly species in their matched patterns!',
+    dew_quest_complete: 'Three Drops of Moon Dew complete! +20 silk and −35% wind wear on all your webs!',
+    wasp_web_snared: 'Your spun threads snared Khryazh-Syakaya’s wings — her flight slows!',
   },
 
   pauseTitle: 'Paused',
@@ -335,21 +402,29 @@ const EN: TranslationBundle = {
     },
   },
   graphics: {
+    lowest: {
+      name: 'Minimal (Still)',
+      desc: 'Static grass without wind sway · lightest resolution · maximum FPS',
+    },
     low: {
       name: 'Low',
-      desc: 'Crisp silhouettes · soft shadows off · minimal particles',
+      desc: 'Gentle grass sway · shadows off · minimal particles',
     },
     medium: {
       name: 'Balanced',
-      desc: 'Standard reflections · moderate motes & foliage depth',
+      desc: 'Soft reflections · moderate motes & foliage depth',
     },
     high: {
       name: 'High',
       desc: 'Dynamic shadows · iridescent chitin · rich moonlight fog',
     },
     ultra: {
+      name: 'Ultra',
+      desc: 'Volumetric moonbeams · macro DoF · ambient occlusion & fireflies',
+    },
+    cinematic: {
       name: 'Cinematic',
-      desc: 'Volumetric moonbeams · fireflies · maximum pixel crispness',
+      desc: 'Full moonlight rim highlights · peak bokeh & shimmer · max pixel crispness',
     },
   },
   actions: {
@@ -358,6 +433,7 @@ const EN: TranslationBundle = {
     moveLeft: 'Move Left',
     moveRight: 'Move Right',
     jump: 'Jump',
+    dash: 'Silk-Scuttle (Dodge)',
     interact: 'Weave / Interact',
     harvest: 'Catch & Gather Fly',
     grapple: 'Silk-Grapple',
@@ -384,6 +460,67 @@ const EN: TranslationBundle = {
     left_birch_brace_c: 'Birch Root Spur',
     anchor_right_birch: 'Anchor III: East Birch (Wasp Trail)',
   },
+
+  tabOverview: 'Overview',
+  tabJournal: 'Journal & Lore',
+  questSectionTitle: 'Moonlit Trial',
+  dewQuestTitle: 'Three Drops of Moon Dew',
+  dewQuestDoneTag: 'Complete',
+  dewQuestSteps: {
+    fatbellyTriangle: 'Catch a Fatbelly fly inside a Triangle web',
+    nimbleStar: 'Catch a Mirrushka fly inside a Star web',
+    greenieCircle: 'Catch a Greenie fly inside a Circle web',
+  },
+  dewQuestRewardHint: 'Reward: +20 silk & Dew-Tempered Silk (−35% wind decay)',
+  bestiaryTitle: 'Hollow Bestiary',
+  speciesLabels: {
+    fatbelly: 'Fatbelly',
+    nimble: 'Mirrushka',
+    greenie: 'Greenie',
+    tearbearer: 'Tearbearer',
+  },
+  loreSectionTitle: 'Chronicles of the Hollow',
+  loreLockedHint: 'Progress further through the chapters to awaken this memory.',
+  loreEntries: {
+    shadow_stitch: {
+      title: 'The Shadow-Stitch',
+      body: 'A black snag tore across the Moon’s face, scattering the Five Great Patterns into the misty woods below.',
+    },
+    uspokh_wisdom: {
+      title: 'Elder Uspokh’s Vigil',
+      body: 'Long ago, Uspokh spun beneath the same mossy snag. His stiffened tarsal claws still remember the first silver dew.',
+    },
+    khryazh_trail: {
+      title: 'Khryazh-Syakaya',
+      body: 'A scarred hunting wasp drawn by trembling leaves and bright silk. Only decoy nests, dense webs, and stinging nettles turn her gaze aside.',
+    },
+    three_anchors: {
+      title: 'The Three Old Anchors',
+      body: 'Beyond the Hollow, Old Stump and both silver birches hold ancient notches strong enough to bear the Great Weaving Pattern.',
+    },
+    dew_temper: {
+      title: 'Dew-Tempered Silk',
+      body: 'Mixing honeyed essence from three distinct fly patterns coats a web in moon-dew that shrugs off night gales.',
+    },
+    first_pattern: {
+      title: 'The First Weaving Pattern',
+      body: 'Bound to Old Stump and both silver birches, the awakened pattern mends the sky’s silver seam.',
+    },
+  },
+
+  tabAccessibility: 'Accessibility',
+  uiScaleLabel: 'UI & Font Scale',
+  colorblindLabel: 'Colorblind Pattern Symbols',
+  colorblindDesc: 'Adds high-contrast geometric shapes & threat markers to glowing webs and wasp radar.',
+  reducedEffectsLabel: 'Disable Shake & Flashes',
+  reducedEffectsDesc: 'Stops camera tremor, hitstop impact shakes, and screen danger flashes.',
+  enabledTag: 'On',
+  disabledTag: 'Off',
+  journalToggleBtn: 'Journal',
+  radarTitle: 'Web Radar',
+  spiderSenseAlert: 'Web Tremor',
+  patternWheelLabel: 'Patterns',
+  abilitiesMenuLabel: 'Skills',
 };
 
 function makeBundle(overrides: Partial<TranslationBundle>): TranslationBundle {
@@ -395,10 +532,14 @@ function makeBundle(overrides: Partial<TranslationBundle>): TranslationBundle {
     speakers: { ...EN.speakers, ...(overrides.speakers || {}) },
     chapters: { ...EN.chapters, ...(overrides.chapters || {}) },
     whispers: { ...EN.whispers, ...(overrides.whispers || {}) },
+    waspAlerts: { ...EN.waspAlerts, ...(overrides.waspAlerts || {}) },
     difficulties: { ...EN.difficulties, ...(overrides.difficulties || {}) },
     graphics: { ...EN.graphics, ...(overrides.graphics || {}) },
     actions: { ...EN.actions, ...(overrides.actions || {}) },
     anchors: { ...EN.anchors, ...(overrides.anchors || {}) },
+    dewQuestSteps: { ...EN.dewQuestSteps, ...(overrides.dewQuestSteps || {}) },
+    speciesLabels: { ...EN.speciesLabels, ...(overrides.speciesLabels || {}) },
+    loreEntries: { ...EN.loreEntries, ...(overrides.loreEntries || {}) },
   };
 }
 
@@ -410,7 +551,7 @@ const RU: TranslationBundle = makeBundle({
   startBtn: 'Начать тканьё',
   settingsBtn: 'Настройки',
   controlsHint:
-    'WASD Ходьба · Space / ПКМ Прыжок · Мышь Камера · E / ЛКМ Плести · F Муха · Q Нить-хвать · 1–4 Узор · Esc Пауза',
+    'WASD Ходьба · Space / ПКМ Прыжок · Shift Рывок · Мышь Камера · E / ЛКМ Плести · F Муха · Q Хвать · 1–4 Узор · Esc Пауза',
 
   silkLabel: 'Шёлк',
   composureLabel: 'Самообладание',
@@ -419,22 +560,34 @@ const RU: TranslationBundle = makeBundle({
   leftBirchLabel: 'Левая берёза',
   rightBirchLabel: 'Правая берёза',
   windGusty: 'Порыв ветра',
+  windRising: 'Поднимается ветер…',
   windCalm: 'Штиль',
   hiddenInNettle: 'Укрытие в крапиве',
   tremorLabel: 'Дрожь',
   waspDistUnit: 'м',
   airborneTag: 'Прыжок',
+  silkBridgeTag: 'По нити',
 
   promptHarvest: '[{k}] Поймать муху и собрать шёлк',
   promptClosePattern: '[{k}] Замкнуть узор на «{anchor}»',
+  promptRepairWeb: '[{k}] Подлатать узор у «{anchor}» (3 шёлка)',
   promptExtendTo: '[{k}] Протянуть нить к: {anchor}',
   promptAttachFrom: '[{k}] Зацепить нить: {anchor}',
   promptGrapple: '[{k}] Нить-хвать → {anchor}',
   promptThreadActive: 'Нить тянется от «{anchor}» — подойди к следующему сучку',
   grappleBtnLabel: 'Хвать',
   jumpBtnLabel: 'Прыжок',
+  dashBtnLabel: 'Рывок',
+  dashReadyTag: 'Рывок готов',
   weaveBtnLabel: 'Плести',
   harvestBtnLabel: 'Собрать',
+  waspAlerts: {
+    patrol: 'Оса патрулирует',
+    perch: 'Оса села — безопасно!',
+    investigate: 'Ищет — замри или в крапиву!',
+    dive: 'ПИКИРУЕТ — увернись [{k}]!',
+    lured: 'Клюнула на Узор-Обман!',
+  },
 
   patterns: {
     triangle: {
@@ -509,16 +662,25 @@ const RU: TranslationBundle = makeBundle({
     great_victory: 'Великий Ткацкий Узор замкнулся и просиял над лесом! Штопина на Луне дрогнула.',
     tearbearer_caught: 'Носительница Слезы поймана! +{amount} шёлка. Впереди Первое Поле.',
     fly_caught: 'Глупое созданье поймано! +{amount} шёлка в запас.',
+    aerial_catch: 'Бросок в полёте! Добыча схвачена на лету (+{amount} шёлка)!',
+    web_mended: 'Свежая роса вернула узору прежнюю тугую звонкость.',
+    silk_bridge: 'Лёгок, как лунная роса — по собственным нитям можно бежать прямо по воздуху!',
     wasp_incoming: 'Жужжит! Хряж-Сякая летит! Прячься в крапиве, жди пока сядет, и сплети Узор-Обман (4).',
     wasp_perch: 'Хряж-Сякая села передохнуть на сук! Время сплести Узор-Обман (4).',
     wasp_lured: 'Ха! Жуткое созданье приняло наш узор за чужое гнездо!',
     wasp_departed_grapple: 'Оса улетела ни с чем! Получена Нить-хвать (Q). Натяни 6 несущих нитей от 3 Якорей и добудь 100 шёлка!',
     wasp_departed_quick: 'Хряж-Сякая улетела прочь. Действуй быстро!',
-    wasp_investigate: 'Она заметила шорох в листьях — замри в крапиве!',
-    wasp_knockback: 'Хряж-Сякая сбила тебя вихрем в траву! Прячься в крапиве и сплети Узор-Обман.',
+    wasp_investigate: 'Она услышала шорох в листьях — замри на месте или нырни в крапиву!',
+    wasp_knockback: 'Вихрь крыльев сбил тебя! Уходи рывком (Shift) в крапиву или за корягу.',
+    wasp_dodged: 'Чистое уклонение! Ты выскользнул из-под пике (+5 шёлка)!',
+    wasp_lost_sight: 'Ты замер как камешек — Хряж-Сякая потеряла след и отлетела.',
+    still_stealth: 'Замри на месте или жми Shift для рывка, когда оса нацеливается.',
     hollow_need_grapple: 'Ложина слишком глубока — нужна Нить-хвать из Главы 2.',
     birch_wind_snap: 'Порыв ветра рвёт длинную нить! Сплети треугольник-распорку у берёзы или дождись штиля.',
     jump_hint: 'Нажми Space или правую кнопку мыши, чтобы перепрыгивать через кочки и коряги.',
+    dew_quest_progress: 'Капля Лунной Росы собрана ({count}/3). Поймай все три вида мух в их родные узоры!',
+    dew_quest_complete: 'Три Капли Лунной Росы собраны! +20 шёлка и −35% износа нитей от ветра!',
+    wasp_web_snared: 'Твои нити опутали крылья Хряж-Сякой — оса замедлилась!',
   },
 
   pauseTitle: 'Пауза',
@@ -576,10 +738,30 @@ const RU: TranslationBundle = makeBundle({
     eclipse: { name: 'Затмение Луны', desc: '1 самообладание · свирепые атаки и шквалы' },
   },
   graphics: {
-    low: { name: 'Низкая', desc: 'Лёгкий рендер без теней · минимум частиц' },
-    medium: { name: 'Средняя', desc: 'Умеренные отражения и плотность света' },
-    high: { name: 'Высокая', desc: 'Тени, переливающийся хитин и глубокий туман' },
-    ultra: { name: 'Кинематографичная', desc: 'Лунные лучи, светлячки и максимум деталей' },
+    lowest: {
+      name: 'Минимальная',
+      desc: 'Неподвижная трава без шевеления · минимум эффектов · максимум FPS',
+    },
+    low: {
+      name: 'Низкая',
+      desc: 'Лёгкий рендер без теней · лёгкое дыхание травы · минимум частиц',
+    },
+    medium: {
+      name: 'Средняя',
+      desc: 'Умеренные отражения, папоротники и мягкий свет',
+    },
+    high: {
+      name: 'Высокая',
+      desc: 'Тени, переливающийся хитин и глубокий ночной туман',
+    },
+    ultra: {
+      name: 'Ультра',
+      desc: 'Лунные лучи, SSAO, глубина резкости и светлячки',
+    },
+    cinematic: {
+      name: 'Кинематографичная',
+      desc: 'Максимум деталей, контровой лунный блик и пиковое сглаживание',
+    },
   },
   actions: {
     moveForward: 'Вперёд',
@@ -587,6 +769,7 @@ const RU: TranslationBundle = makeBundle({
     moveLeft: 'Влево',
     moveRight: 'Вправо',
     jump: 'Прыжок',
+    dash: 'Рывок-уклонение',
     interact: 'Плести / Действие',
     harvest: 'Поймать муху',
     grapple: 'Нить-хвать',
@@ -613,6 +796,67 @@ const RU: TranslationBundle = makeBundle({
     left_birch_brace_c: 'Корень у бересты',
     anchor_right_birch: 'Якорь №3: Правая Берёза',
   },
+
+  tabOverview: 'Обзор',
+  tabJournal: 'Журнал и Лор',
+  questSectionTitle: 'Лунное испытание',
+  dewQuestTitle: 'Три капли лунной росы',
+  dewQuestDoneTag: 'Выполнено',
+  dewQuestSteps: {
+    fatbellyTriangle: 'Поймай Толстобрюхую муху в узор «Треугольник»',
+    nimbleStar: 'Поймай Миррушку в узор «Звезда»',
+    greenieCircle: 'Поймай Зелонку в узор «Круг»',
+  },
+  dewQuestRewardHint: 'Награда: +20 шёлка и Закалка Росой (−35% износа от ветра)',
+  bestiaryTitle: 'Бестиарий лога',
+  speciesLabels: {
+    fatbelly: 'Толстобрюшка',
+    nimble: 'Миррушка',
+    greenie: 'Зелонка',
+    tearbearer: 'Носительница Слезы',
+  },
+  loreSectionTitle: 'Хроники Коряжного Лога',
+  loreLockedHint: 'Продвигайся по главам, чтобы пробудить это воспоминание.',
+  loreEntries: {
+    shadow_stitch: {
+      title: 'Тень Небосвода',
+      body: 'Тёмная прореха распорола лик Луны и разметала пять Великих Узоров над туманным лесом.',
+    },
+    uspokh_wisdom: {
+      title: 'Наказ Старого Успоха',
+      body: 'Некогда Успох сам плёл под этой мшистой корягой. Его застывшие коготки помнят вкус первой росы.',
+    },
+    khryazh_trail: {
+      title: 'Хряж-Сякая',
+      body: 'Шрамированная оса-наездница, чуткая к шороху листвы. Отвести её взгляд могут лишь ложные гнёзда, густая сеть и крапива.',
+    },
+    three_anchors: {
+      title: 'Три Старых Якоря',
+      body: 'За ложиной Старый Пень и две серебристые берёзы хранят древние зарубки — лишь они выдержат несущие нити Великого Узора.',
+    },
+    dew_temper: {
+      title: 'Шёлк Лунной Росы',
+      body: 'Эссенция трёх разных видов добычи пропитывает паутину росой, и та перестаёт бояться ночных порывов ветра.',
+    },
+    first_pattern: {
+      title: 'Узор Первый — Ткацкий',
+      body: 'Закреплённый на Старом Пне и двух берёзах, пробуждённый Узор сшивает разорванное лунное серебро.',
+    },
+  },
+
+  tabAccessibility: 'Доступность',
+  uiScaleLabel: 'Масштаб UI и шрифта',
+  colorblindLabel: 'Режим для дальтоников',
+  colorblindDesc: 'Добавляет контрастные геометрические метки и символы угроз к узорам и паутине-радару.',
+  reducedEffectsLabel: 'Отключить тряску и вспышки',
+  reducedEffectsDesc: 'Убирает дрожь камеры при ударах, вибрацию страха и красные вспышки по краям.',
+  enabledTag: 'Вкл',
+  disabledTag: 'Выкл',
+  journalToggleBtn: 'Дневник',
+  radarTitle: 'Паутина-радар',
+  spiderSenseAlert: 'Дрожь нитей',
+  patternWheelLabel: 'Узоры',
+  abilitiesMenuLabel: 'Навыки',
 });
 
 const UK = makeBundle({
@@ -641,12 +885,14 @@ const UK = makeBundle({
   tabDifficulty: 'Складність',
   tabGraphics: 'Графіка',
   jumpBtnLabel: 'Стрибок',
+  dashBtnLabel: 'Ривок',
   weaveBtnLabel: 'Плести',
   harvestBtnLabel: 'Зібрати',
   grappleBtnLabel: 'Нитка-хвать',
   actions: {
     ...RU.actions,
     jump: 'Стрибок',
+    dash: 'Ривок-ухилення',
     interact: 'Плести / Дія',
     harvest: 'Зібрати муху',
     grapple: 'Нитка-хвать',
@@ -695,6 +941,7 @@ const FR = makeBundle({
     moveLeft: 'Gauche',
     moveRight: 'Droite',
     jump: 'Sauter',
+    dash: 'Esquive rapide',
     interact: 'Tisser / Agir',
     harvest: 'Capturer mouche',
     grapple: 'Fil-Grappin',
@@ -745,6 +992,7 @@ const DE = makeBundle({
     moveLeft: 'Links',
     moveRight: 'Rechts',
     jump: 'Springen',
+    dash: 'Ausweichsprint',
     interact: 'Weben / Interagieren',
     harvest: 'Fliege fangen',
     grapple: 'Faden-Sprung',

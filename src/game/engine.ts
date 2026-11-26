@@ -21,22 +21,35 @@ import {
   canBearingStrandHold,
   checkGreatPatternComplete,
   classifyPattern,
+  computeAerialCatchReward,
   computeCombatStanceBlend,
   computeFearState,
+  computeIdleTapPulse,
   computeMacroFocusDistance,
+  computePatternSpeciesAffinity,
+  computeSetaeVibrationAmp,
+  computeSilkBridgeHeight,
   computeSurfaceHeight,
+  computeUnlockedLoreIds,
+  computeWaspRelativeBearingDeg,
   createPatternRecord,
   detectLocationZone,
   DIFFICULTY_CONFIGS,
   distance3D,
   groundHeightAt,
+  INITIAL_DEW_QUEST,
+  isWaspSnaredInWeb,
   PATTERN_SPECS,
   POND_WATER_Y,
+  projectToRadarCoords,
   resolveObstacleCollisions,
   resolveOutcome,
   SILK_COST_BY_SHAPE,
   SILK_REWARD_BY_SPECIES,
+  stepDewQuest,
+  stepPatternDurability,
   stepWaspAI,
+  stepWebDewRegeneration,
 } from './rules';
 import {
   isAnyBindingHeld,
@@ -47,7 +60,9 @@ import { createProceduralTextures, type ProceduralTextureSet } from './textures'
 import type {
   AnchorNode,
   ChapterPhase,
+  DewQuestState,
   DifficultyLevel,
+  ExternalEngineState,
   FlySpecies,
   GameOutcome,
   GameScreenState,
@@ -55,6 +70,7 @@ import type {
   HudSnapshot,
   LocationZone,
   PatternShape,
+  RadarBlip,
   SilkStrand,
   UserSettings,
   Vec3,
@@ -64,6 +80,9 @@ import type {
   WhisperParams,
   WovenPattern,
 } from './types';
+
+const _gazeLookDir = new THREE.Vector3();
+const _gazeToWeb = new THREE.Vector3();
 
 interface LiveFly {
   id: string;
@@ -222,6 +241,7 @@ export class OrbWeaverEngine {
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
   private moonKeyLight!: THREE.DirectionalLight;
+  private heroRimLight!: THREE.SpotLight;
   private isSoftwareGl: boolean;
   private textures!: ProceduralTextureSet;
   private world!: ForestWorldHandle;
@@ -249,12 +269,15 @@ export class OrbWeaverEngine {
   private spiderPos = new THREE.Vector3(0.4, 0, 3.2);
   private spiderVelY = 0;
   private isGrounded = true;
+  private onSilkBridge = false;
   private coyoteTimer = 0;
   private jumpBufferTimer = 0;
   private spiderSquashY = 1;
   private spiderYaw = Math.PI;
   private walkDistance = 0;
   private lastStepPhase = 0;
+  private lastIdleTapPulses: [number, number] = [0, 0];
+  private idleTapSoundCooldown = 0;
   private combatStanceBlend = 0;
   private nearestFlyDist = Infinity;
   private nearestFlyCamDist: number | null = null;
@@ -266,6 +289,10 @@ export class OrbWeaverEngine {
   private grappleStart = new THREE.Vector3();
   private grappleEnd = new THREE.Vector3();
   private grappleProgress = 0;
+  private dashCooldown = 0;
+  private dashTimer = 0;
+  private dashIFrameTimer = 0;
+  private dashDir = new THREE.Vector2(0, -1);
 
   private camYaw = 0;
   private camPitch = 0.22;
@@ -284,8 +311,17 @@ export class OrbWeaverEngine {
   private waspTimer = 0;
   private waspPos = new THREE.Vector3(16, 4.5, -14);
   private waspAngle = 0;
+  private waspDiveTarget = new THREE.Vector3();
+  private waspDiveHitCommitted = false;
+  private waspPostDiveCooldown = 0;
+  private waspHitInvulnTimer = 0;
+  private waspWebSlowTimer = 0;
+  private calmRegenTimer = 0;
+  private dewRegenAccumulator = 0;
+  private shownStillStealthHint = false;
 
   private weather: WeatherState = 'calm';
+  private windWarning = false;
   private weatherTimer = 0;
   private windStrength = 0.14;
 
@@ -297,21 +333,28 @@ export class OrbWeaverEngine {
 
   private strands: SilkStrand[] = [];
   private patterns: WovenPattern[] = [];
+  private patternById = new Map<string, WovenPattern>();
   private webMeshes: THREE.Object3D[] = [];
   private flies: LiveFly[] = [];
   private flySpawnTimer = 0;
   private fliesCaught = 0;
+  private aerialCatches = 0;
+  private shownBridgeHint = false;
   private caughtSpecies: Record<FlySpecies, number> = {
     fatbelly: 0,
     nimble: 0,
     greenie: 0,
     tearbearer: 0,
   };
+  private dewQuest: DewQuestState = { ...INITIAL_DEW_QUEST };
+  private perfFrameAccum = 0;
+  private perfFrameCount = 0;
+  private perfDownscaled = false;
 
   private motesMesh!: THREE.InstancedMesh;
   private motes: PooledMote[] = [];
   private moteCursor = 0;
-  private activeAmbientMotesLimit = 48;
+  private activeAmbientMotesLimit = 50;
 
   private whisperId: WhisperId = 'prologue_intro';
   private whisperParams: WhisperParams | undefined;
@@ -323,6 +366,8 @@ export class OrbWeaverEngine {
 
   private keys = new Set<string>();
   private inputSuspended = false;
+  private externalIsMobile = false;
+  private externalInputMode: 'touch' | 'keyboard' = 'keyboard';
   private elapsedSeconds = 0;
   private lastHudPush = 0;
   private startTimeMs = performance.now();
@@ -331,12 +376,25 @@ export class OrbWeaverEngine {
   private frameId = 0;
   private disposed = false;
   private resizeObserver: ResizeObserver | null = null;
+  private anchorPosMap = new Map<string, Vec3>();
+  private cachedNearAnchor: AnchorNode | null = null;
+  private windStreaks: {
+    x: number;
+    y: number;
+    z: number;
+    speed: number;
+    len: number;
+    phase: number;
+  }[] = [];
   private disposableWebGeos: THREE.BufferGeometry[] = [];
   private disposableWebMats: THREE.Material[] = [];
   private webPulseEntries: {
     mat: THREE.MeshPhysicalMaterial;
     baseEmissive: number;
+    baseOpacity: number;
     phase: number;
+    patternId?: string;
+    group?: THREE.Object3D;
   }[] = [];
 
   constructor(
@@ -429,6 +487,14 @@ export class OrbWeaverEngine {
     warmBounce.position.set(-10, 6, 14);
     this.scene.add(warmBounce);
 
+    // Cool nocturnal blue rim light behind Pavutin so setae & legs crisp against dark forest shadows
+    this.heroRimLight = new THREE.SpotLight(0x6bb8ff, 5.8, 12.0, 0.64, 0.86, 1.35);
+    this.heroRimLight.castShadow = false;
+    this.heroRimLight.position.set(0.4, 2.2, 0.2);
+    this.heroRimLight.target.position.set(0.4, 0.35, 3.2);
+    this.scene.add(this.heroRimLight);
+    this.scene.add(this.heroRimLight.target);
+
     // Post-processing: RenderPass -> SSAOPass -> UnrealBloomPass -> BokehPass (Ultra only) -> Vignette+ColorGrade -> OutputPass (ACES Filmic)
     this.composer = new EffectComposer(this.renderer);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
@@ -469,6 +535,18 @@ export class OrbWeaverEngine {
     const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
     this.textures = createProceduralTextures(maxAniso);
     this.world = createForestWorld(this.scene, this.textures, this.isSoftwareGl);
+    this.anchorPosMap.clear();
+    for (const a of this.world.anchors) {
+      this.anchorPosMap.set(a.id, a.position);
+    }
+    this.windStreaks = Array.from({ length: 28 }, (_, i) => ({
+      x: ((i * 7.3) % 34) - 17,
+      y: 0.7 + (i % 6) * 0.65,
+      z: ((i * 5.9) % 28) - 16,
+      speed: 3.4 + (i % 5) * 0.95,
+      len: 0.7 + (i % 4) * 0.38,
+      phase: i * 0.8,
+    }));
 
     this.pavutin = createPavutinModel(this.textures);
     this.scene.add(this.pavutin.root);
@@ -508,7 +586,7 @@ export class OrbWeaverEngine {
     this.targetSporesGroup.visible = false;
     this.scene.add(this.targetSporesGroup);
 
-    const moteCount = 140;
+    const moteCount = 156;
     const moteGeo = new THREE.SphereGeometry(0.052, 6, 6);
     const moteMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
@@ -523,7 +601,7 @@ export class OrbWeaverEngine {
     this.motesMesh.frustumCulled = false;
     const moteTint = new THREE.Color();
     for (let i = 0; i < moteCount; i++) {
-      const ambient = i < 64;
+      const ambient = i < 80;
       const isPondFirefly = i < 16;
       this.motes.push({
         active: ambient,
@@ -599,6 +677,21 @@ export class OrbWeaverEngine {
     );
   }
 
+  public syncExternalState(state: ExternalEngineState): void {
+    this.externalIsMobile = state.isMobile;
+    this.externalInputMode = state.inputMode;
+    if (state.inputMode === 'keyboard') {
+      this.touchMoveVec.set(0, 0);
+    }
+  }
+
+  public getExternalState(): ExternalEngineState {
+    return {
+      isMobile: this.externalIsMobile,
+      inputMode: this.externalInputMode,
+    };
+  }
+
   private applyDifficultyLive(diff: DifficultyLevel): void {
     const cfg = DIFFICULTY_CONFIGS[diff];
     this.maxComposure = cfg.maxComposure;
@@ -610,19 +703,29 @@ export class OrbWeaverEngine {
 
   private applyGraphicsQuality(quality: GraphicsQuality): void {
     if (!this.renderer || !this.world) return;
+    const isMinimal = quality === 'lowest';
+    const isLowTier = quality === 'lowest' || quality === 'low';
+    const isHighOrAbove =
+      quality === 'high' || quality === 'ultra' || quality === 'cinematic';
+    const isUltraOrAbove = quality === 'ultra' || quality === 'cinematic';
+
     if (!this.isSoftwareGl) {
       const dprCap =
-        quality === 'low'
-          ? 0.95
-          : quality === 'medium'
-            ? 1.25
-            : quality === 'high'
-              ? 1.5
-              : 1.85;
+        quality === 'lowest'
+          ? 0.75
+          : quality === 'low'
+            ? 0.95
+            : quality === 'medium'
+              ? 1.2
+              : quality === 'high'
+                ? 1.5
+                : quality === 'ultra'
+                  ? 1.8
+                  : 2.0;
       const pr = Math.min(window.devicePixelRatio, dprCap);
       this.renderer.setPixelRatio(pr);
-      this.renderer.shadowMap.enabled = quality !== 'low';
-      this.moonKeyLight.castShadow = quality !== 'low';
+      this.renderer.shadowMap.enabled = !isLowTier;
+      this.moonKeyLight.castShadow = !isLowTier;
       const targetShadowSize = quality === 'medium' ? 1024 : 2048;
       if (this.moonKeyLight.shadow.mapSize.x !== targetShadowSize) {
         this.moonKeyLight.shadow.mapSize.set(targetShadowSize, targetShadowSize);
@@ -631,21 +734,28 @@ export class OrbWeaverEngine {
       }
       if (this.composer && this.bloomPass) {
         this.composer.setPixelRatio(pr);
-        this.ssaoPass.enabled = quality === 'ultra';
-        this.bloomPass.enabled = quality !== 'low';
+        this.ssaoPass.enabled = isUltraOrAbove;
+        this.bloomPass.enabled = !isLowTier;
         this.bloomPass.strength =
-          quality === 'medium' ? 0.22 : quality === 'high' ? 0.36 : 0.48;
-        this.bokehPass.enabled = quality === 'ultra';
+          quality === 'medium'
+            ? 0.22
+            : quality === 'high'
+              ? 0.36
+              : quality === 'ultra'
+                ? 0.46
+                : 0.56;
+        this.bloomPass.radius = quality === 'cinematic' ? 0.62 : 0.56;
+        this.bokehPass.enabled = isUltraOrAbove;
         const bokehUniforms = this.bokehPass.uniforms as Record<string, THREE.IUniform>;
         if (bokehUniforms['aperture']) {
-          bokehUniforms['aperture'].value = 0.00046;
+          bokehUniforms['aperture'].value = quality === 'cinematic' ? 0.0005 : 0.00038;
         }
         if (bokehUniforms['maxblur']) {
-          bokehUniforms['maxblur'].value = 0.0062;
+          bokehUniforms['maxblur'].value = quality === 'cinematic' ? 0.0068 : 0.0054;
         }
-        this.gradePass.enabled = quality !== 'low';
+        this.gradePass.enabled = !isLowTier;
         (this.gradePass.uniforms.uVignetteStrength as { value: number }).value =
-          quality === 'ultra' ? 0.42 : 0.34;
+          quality === 'cinematic' ? 0.44 : quality === 'ultra' ? 0.39 : 0.33;
       }
       const w = Math.max(1, this.container.clientWidth);
       const h = Math.max(1, this.container.clientHeight);
@@ -657,19 +767,49 @@ export class OrbWeaverEngine {
       this.gradePass.enabled = false;
     }
 
-    this.world.moonBeamsGroup.visible = quality === 'high' || quality === 'ultra';
-    this.world.fernInstances.visible = quality !== 'low';
-    this.world.cloverInstances.visible = quality !== 'low';
-    this.world.fallenLeafInstances.visible = quality !== 'low';
-    this.world.mistInstances.visible = quality !== 'low';
+    // Tier 'lowest' freezes all grass/foliage wind sway completely
+    this.world.windEnabledUniform.value = isMinimal ? 0.0 : 1.0;
+    this.world.moonBeamsGroup.visible = isHighOrAbove;
+    this.world.fernInstances.visible = !isLowTier;
+    this.world.cloverInstances.visible = !isLowTier;
+    this.world.fallenLeafInstances.visible = !isLowTier;
+    this.world.mistInstances.visible = !isLowTier;
+    this.world.windStreaksInst.visible = !isMinimal;
     this.world.grassInstances.visible = true;
-    this.world.distantGrassSpritesInst.visible = true;
+    this.world.distantGrassSpritesInst.visible = !isMinimal;
+
     this.activeAmbientMotesLimit =
-      quality === 'low' ? 18 : quality === 'medium' ? 36 : quality === 'high' ? 52 : 64;
+      quality === 'lowest'
+        ? 8
+        : quality === 'low'
+          ? 18
+          : quality === 'medium'
+            ? 34
+            : quality === 'high'
+              ? 50
+              : quality === 'ultra'
+                ? 64
+                : 80;
     this.renderer.toneMappingExposure =
-      quality === 'low' ? 1.05 : quality === 'medium' ? 1.1 : quality === 'high' ? 1.14 : 1.2;
+      quality === 'lowest'
+        ? 1.02
+        : quality === 'low'
+          ? 1.06
+          : quality === 'medium'
+            ? 1.1
+            : quality === 'high'
+              ? 1.14
+              : quality === 'ultra'
+                ? 1.19
+                : 1.24;
     if (this.scene.fog instanceof THREE.FogExp2) {
-      const fogDensity = quality === 'low' ? 0.017 : quality === 'ultra' ? 0.025 : 0.022;
+      const fogDensity = isMinimal
+        ? 0.014
+        : quality === 'low'
+          ? 0.017
+          : isUltraOrAbove
+            ? 0.025
+            : 0.022;
       this.scene.fog.density = fogDensity;
       this.world.pondWaterUniforms.uFogDensity.value = fogDensity;
       this.world.pondMistUniforms.uFogDensity.value = fogDensity;
@@ -758,6 +898,10 @@ export class OrbWeaverEngine {
       this.triggerJump();
       return true;
     }
+    if (matchesBinding(code, b, 'dash')) {
+      this.triggerDash();
+      return true;
+    }
     if (matchesBinding(code, b, 'interact')) {
       this.triggerPrimaryInteract();
       return true;
@@ -804,7 +948,8 @@ export class OrbWeaverEngine {
     const dy = e.clientY - this.lastPointerY;
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
-    this.camYaw -= dx * 0.0055;
+    const lookSensitivity = this.externalInputMode === 'touch' ? 0.0072 : 0.0055;
+    this.camYaw -= dx * lookSensitivity;
     this.camPitch = THREE.MathUtils.clamp(
       this.camPitch + dy * 0.004,
       0.14,
@@ -817,7 +962,7 @@ export class OrbWeaverEngine {
     e.preventDefault();
     this.camDistTarget = THREE.MathUtils.clamp(
       this.camDistTarget + Math.sign(e.deltaY) * 0.42,
-      3.0,
+      2.1,
       8.2,
     );
   };
@@ -922,6 +1067,51 @@ export class OrbWeaverEngine {
     }
   }
 
+  public triggerDash(): void {
+    if (this.screen !== 'playing' || this.grappleActive || this.dashCooldown > 0) {
+      return;
+    }
+    this.sound.ensureStarted();
+    let moveFwd = this.touchMoveVec.y;
+    let moveRight = this.touchMoveVec.x;
+    const b = this.settings.bindings;
+    if (isAnyBindingHeld(this.keys, b, 'moveForward')) moveFwd += 1;
+    if (isAnyBindingHeld(this.keys, b, 'moveBackward')) moveFwd -= 1;
+    if (isAnyBindingHeld(this.keys, b, 'moveRight')) moveRight += 1;
+    if (isAnyBindingHeld(this.keys, b, 'moveLeft')) moveRight -= 1;
+
+    const inLen = Math.hypot(moveFwd, moveRight);
+    if (inLen > 0.08) {
+      const fwdX = -Math.sin(this.camYaw);
+      const fwdZ = -Math.cos(this.camYaw);
+      const rightX = Math.cos(this.camYaw);
+      const rightZ = -Math.sin(this.camYaw);
+      const dx = (fwdX * moveFwd + rightX * moveRight) / inLen;
+      const dz = (fwdZ * moveFwd + rightZ * moveRight) / inLen;
+      const norm = Math.hypot(dx, dz) || 1;
+      this.dashDir.set(dx / norm, dz / norm);
+    } else if (this.waspState === 'dive' || this.waspState === 'investigate') {
+      // Sidestep perpendicular + slightly away from the diving wasp when standing still
+      const awayX = this.spiderPos.x - this.waspPos.x;
+      const awayZ = this.spiderPos.z - this.waspPos.z;
+      const sideX = -awayZ + awayX * 0.45;
+      const sideZ = awayX + awayZ * 0.45;
+      const norm = Math.hypot(sideX, sideZ) || 1;
+      this.dashDir.set(sideX / norm, sideZ / norm);
+    } else {
+      this.dashDir.set(Math.sin(this.spiderYaw), Math.cos(this.spiderYaw));
+    }
+
+    this.spiderYaw = Math.atan2(this.dashDir.x, this.dashDir.y);
+    this.dashCooldown = 1.6;
+    this.dashTimer = 0.22;
+    this.dashIFrameTimer = 0.36;
+    this.spiderSquashY = 0.84;
+    this.sound.playDash();
+    this.burstMotes(this.spiderPos, 10, 0.24);
+    this.pushHud(true);
+  }
+
   public startGame(): void {
     this.sound.ensureStarted();
     this.keys.clear();
@@ -1009,7 +1199,9 @@ export class OrbWeaverEngine {
 
     this.strands = [];
     this.patterns = [];
+    this.patternById.clear();
     this.activeThreadFrom = null;
+    this.cachedNearAnchor = null;
     this.trailingFilamentMesh.visible = false;
     this.targetSporesGroup.visible = false;
 
@@ -1030,6 +1222,7 @@ export class OrbWeaverEngine {
     this.spiderPos.set(0.4, groundHeightAt(0.4, 3.2), 3.2);
     this.spiderVelY = 0;
     this.isGrounded = true;
+    this.onSilkBridge = false;
     this.coyoteTimer = 0;
     this.jumpBufferTimer = 0;
     this.spiderSquashY = 1;
@@ -1048,17 +1241,31 @@ export class OrbWeaverEngine {
     this.camLook.set(0.2, 1.4, -4.5);
     this.knockbackVel.set(0, 0, 0);
     this.grappleActive = false;
+    this.dashCooldown = 0;
+    this.dashTimer = 0;
+    this.dashIFrameTimer = 0;
     this.currentZone = 'log';
 
     this.waspState = 'absent';
     this.waspTimer = 0;
+    this.waspDiveHitCommitted = false;
+    this.waspPostDiveCooldown = 0;
+    this.waspHitInvulnTimer = 0;
+    this.waspWebSlowTimer = 0;
+    this.calmRegenTimer = 0;
+    this.dewRegenAccumulator = 0;
+    this.shownStillStealthHint = false;
     this.wasp.root.visible = false;
     this.weather = 'calm';
+    this.windWarning = false;
     this.weatherTimer = 0;
     this.windStrength = 0.14;
 
     this.fliesCaught = 0;
+    this.aerialCatches = 0;
+    this.shownBridgeHint = false;
     this.caughtSpecies = { fatbelly: 0, nimble: 0, greenie: 0, tearbearer: 0 };
+    this.dewQuest = { ...INITIAL_DEW_QUEST };
     this.prologueShattered = false;
     this.tearbearerSpawned = false;
     this.victoryDelayTimer = -1;
@@ -1141,6 +1348,16 @@ export class OrbWeaverEngine {
     this.burstMotes(this.spiderPos, 10, 0.25);
   }
 
+  private findWornPatternAtAnchor(anchorId: string): WovenPattern | null {
+    for (let i = 0; i < this.patterns.length; i++) {
+      const p = this.patterns[i];
+      if (p.shape !== 'decoy' && p.durability < 80 && p.nodeIds.includes(anchorId)) {
+        return p;
+      }
+    }
+    return null;
+  }
+
   public triggerPrimaryInteract(): void {
     if (this.screen !== 'playing') return;
     if (this.tryHarvestNearbyFly()) return;
@@ -1149,6 +1366,23 @@ export class OrbWeaverEngine {
     if (!near) {
       this.setWhisper('pavutin', 'approach_twig', undefined, 3);
       return;
+    }
+
+    if (!this.activeThreadFrom) {
+      const worn = this.findWornPatternAtAnchor(near.id);
+      if (worn && this.silk >= 3) {
+        this.silk -= 3;
+        worn.durability = worn.maxDurability;
+        this.sound.playWebMend();
+        this.burstMotes(
+          _v1.set(worn.center.x, worn.center.y, worn.center.z),
+          14,
+          0.26,
+        );
+        this.setWhisper('pavutin', 'web_mended', undefined, 4);
+        this.pushHud(true);
+        return;
+      }
     }
 
     if (this.fear > 78 && !this.hiddenInNettle) {
@@ -1326,7 +1560,8 @@ export class OrbWeaverEngine {
       createdAt: this.elapsedSeconds,
     });
     this.patterns.push(pattern);
-    this.createClosedWebMesh(positions, shape);
+    this.patternById.set(pattern.id, pattern);
+    this.createClosedWebMesh(positions, shape, pattern.id);
     this.sound.playPatternClosed(shape === 'decoy');
     this.burstMotes(
       _v1.set(pattern.center.x, pattern.center.y, pattern.center.z),
@@ -1367,8 +1602,8 @@ export class OrbWeaverEngine {
 
   private triggerPrologueShatter(): void {
     this.prologueShattered = true;
-    this.hitstopTimer = 0.06;
-    this.trauma = 0.55;
+    this.hitstopTimer = this.settings.reducedEffects ? 0 : 0.06;
+    this.trauma = this.settings.reducedEffects ? 0 : 0.55;
     this.moonRestored = 0.05;
     this.textures.updateMoonStitch(this.moonRestored);
     this.sound.playSnapWarning();
@@ -1408,52 +1643,96 @@ export class OrbWeaverEngine {
     this.pushHud(true);
   }
 
-  public tryHarvestNearbyFly(): boolean {
+  public tryHarvestNearbyFly(forcedAerial = false, specificFly?: LiveFly): boolean {
     if (this.screen !== 'playing') return false;
+    const airborne = forcedAerial || !this.isGrounded;
+    const reach = airborne ? 3.55 : 3.0;
     let bestIdx = -1;
-    let bestD = 3.0;
-    for (let i = 0; i < this.flies.length; i++) {
-      const d = this.flies[i].pos.distanceTo(this.spiderPos);
-      if (d < bestD) {
-        bestD = d;
-        bestIdx = i;
+    let bestD = reach;
+    if (specificFly) {
+      bestIdx = this.flies.indexOf(specificFly);
+    } else {
+      for (let i = 0; i < this.flies.length; i++) {
+        const d = this.flies[i].pos.distanceTo(this.spiderPos);
+        if (d < bestD) {
+          bestD = d;
+          bestIdx = i;
+        }
       }
     }
     if (bestIdx === -1) return false;
 
     const fly = this.flies[bestIdx];
     const diffCfg = DIFFICULTY_CONFIGS[this.settings.difficulty];
-    const reward = Math.round(
+    const baseReward = Math.round(
       SILK_REWARD_BY_SPECIES[fly.species] * diffCfg.silkRewardMultiplier,
     );
-    this.silk = Math.min(this.maxSilk, this.silk + reward);
+    const isMidAirCatch = airborne || fly.pos.y - this.spiderPos.y > 0.72;
+    const { totalReward, aerialBonus } = computeAerialCatchReward(
+      baseReward,
+      isMidAirCatch,
+    );
+
+    let caughtShape: PatternShape | null = null;
+    if (fly.caughtPatternId) {
+      const pat = this.patternById.get(fly.caughtPatternId);
+      if (pat) {
+        caughtShape = pat.shape;
+        if (pat.shape !== 'decoy') {
+          pat.durability = Math.max(12, pat.durability - 22);
+        }
+      }
+    }
+
+    this.silk = Math.min(this.maxSilk, this.silk + totalReward);
     this.fliesCaught++;
+    if (aerialBonus > 0) this.aerialCatches++;
     this.caughtSpecies[fly.species]++;
     this.composure = Math.min(this.maxComposure, this.composure + 1);
 
-    // Quick predatory lunge snap toward caught fly
+    const dewStep = stepDewQuest(this.dewQuest, fly.species, caughtShape);
+    this.dewQuest = dewStep.next;
+    if (dewStep.justCompleted) {
+      this.silk = Math.min(this.maxSilk, this.silk + 20);
+      this.burstMotes(this.spiderPos, 24, 0.36);
+    }
+
+    // Quick predatory lunge snap / aerial pounce toward caught fly
     _v1.subVectors(fly.pos, this.spiderPos).setY(0);
     if (_v1.lengthSq() > 0.04) {
       this.spiderYaw = Math.atan2(_v1.x, _v1.z);
-      _v1.normalize().multiplyScalar(2.8);
+      _v1.normalize().multiplyScalar(aerialBonus > 0 ? 4.1 : 2.8);
       this.knockbackVel.copy(_v1);
     }
-    this.spiderSquashY = 1.2;
+    if (aerialBonus > 0 && this.spiderVelY < 2.4) {
+      this.spiderVelY = 2.4;
+    }
+    this.spiderSquashY = aerialBonus > 0 ? 1.28 : 1.2;
 
-    this.sound.playFlyCapture();
-    this.hitstopTimer = 0.035;
-    this.burstMotes(fly.pos, 14, 0.28);
+    this.sound.playFlyCapture(aerialBonus > 0);
+    this.hitstopTimer = this.settings.reducedEffects ? 0 : aerialBonus > 0 ? 0.048 : 0.035;
+    this.burstMotes(fly.pos, aerialBonus > 0 ? 18 : 14, aerialBonus > 0 ? 0.34 : 0.28);
 
     this.scene.remove(fly.rig.root);
     this.flies.splice(bestIdx, 1);
 
-    if (fly.species === 'tearbearer') {
-      this.setWhisper('pavutin', 'tearbearer_caught', { amount: reward }, 5);
+    if (dewStep.justCompleted) {
+      this.setWhisper('moon', 'dew_quest_complete', undefined, 6.5);
+    } else if (dewStep.progressed) {
+      const doneCount =
+        (this.dewQuest.fatbellyTriangle ? 1 : 0) +
+        (this.dewQuest.nimbleStar ? 1 : 0) +
+        (this.dewQuest.greenieCircle ? 1 : 0);
+      this.setWhisper('uspokh', 'dew_quest_progress', { count: doneCount, total: 3 }, 4.8);
+    } else if (fly.species === 'tearbearer') {
+      this.setWhisper('pavutin', 'tearbearer_caught', { amount: totalReward }, 5);
       if (this.chapter === 'ch1_threads') {
         this.advanceToChapter2();
       }
+    } else if (aerialBonus > 0) {
+      this.setWhisper('pavutin', 'aerial_catch', { amount: totalReward }, 4.2);
     } else {
-      this.setWhisper('pavutin', 'fly_caught', { amount: reward }, 3.5);
+      this.setWhisper('pavutin', 'fly_caught', { amount: totalReward }, 3.5);
     }
 
     if (this.chapter === 'ch1_threads' && this.silk >= 60) {
@@ -1513,11 +1792,17 @@ export class OrbWeaverEngine {
     this.webPulseEntries.push({
       mat,
       baseEmissive: mat.emissiveIntensity,
+      baseOpacity: mat.opacity,
       phase: this.webPulseEntries.length * 0.85,
+      group: mesh,
     });
   }
 
-  private createClosedWebMesh(positions: Vec3[], shape: PatternShape): void {
+  private createClosedWebMesh(
+    positions: Vec3[],
+    shape: PatternShape,
+    patternId?: string,
+  ): void {
     const center = new THREE.Vector3();
     positions.forEach((p) => center.add(new THREE.Vector3(p.x, p.y, p.z)));
     center.divideScalar(positions.length);
@@ -1621,8 +1906,22 @@ export class OrbWeaverEngine {
     this.disposableWebMats.push(strandMat, dewMat);
     const phase = this.webPulseEntries.length * 0.7;
     this.webPulseEntries.push(
-      { mat: strandMat, baseEmissive: strandMat.emissiveIntensity, phase },
-      { mat: dewMat, baseEmissive: dewMat.emissiveIntensity, phase: phase + 0.5 },
+      {
+        mat: strandMat,
+        baseEmissive: strandMat.emissiveIntensity,
+        baseOpacity: strandMat.opacity,
+        phase,
+        patternId,
+        group: webGroup,
+      },
+      {
+        mat: dewMat,
+        baseEmissive: dewMat.emissiveIntensity,
+        baseOpacity: dewMat.opacity,
+        phase: phase + 0.5,
+        patternId,
+        group: webGroup,
+      },
     );
   }
 
@@ -1716,6 +2015,8 @@ export class OrbWeaverEngine {
       });
     }
 
+    this.updateHeroRimLight(elapsed);
+
     this.world.windTimeUniform.value = elapsed;
     this.world.windStrengthUniform.value =
       Math.max(0.24, this.windStrength) + Math.sin(elapsed * 0.95) * 0.08;
@@ -1747,14 +2048,31 @@ export class OrbWeaverEngine {
     const gustBoost = this.weather === 'gusty' ? 0.24 : 0.1;
     for (let i = 0; i < this.webPulseEntries.length; i++) {
       const entry = this.webPulseEntries[i];
+      let durFactor = 1.0;
+      if (entry.patternId) {
+        const pat = this.patternById.get(entry.patternId);
+        if (!pat) {
+          if (entry.group) entry.group.visible = false;
+          continue;
+        }
+        if (entry.group) entry.group.visible = true;
+        durFactor = Math.max(0.25, pat.durability / pat.maxDurability);
+      }
+      const shimmer = Math.sin(elapsed * 2.15 + entry.phase) * gustBoost;
       entry.mat.emissiveIntensity =
-        entry.baseEmissive + Math.sin(elapsed * 2.15 + entry.phase) * gustBoost;
+        entry.baseEmissive * (0.38 + 0.62 * durFactor) + shimmer;
+      entry.mat.opacity = entry.baseOpacity * (0.42 + 0.58 * durFactor);
+    }
+
+    if (this.world.moonBeamsGroup.visible) {
+      this.world.moonBeamMat.opacity = 0.036 + Math.sin(elapsed * 0.55) * 0.012;
     }
 
     const mistMat = this.world.mistInstances.material as THREE.MeshStandardMaterial;
     mistMat.opacity = 0.2 + Math.sin(elapsed * 0.55) * 0.035;
     this.animateUspokh(elapsed);
     this.updateMotes(dt, elapsed);
+    this.updateWindStreaks(dt, elapsed);
 
     if (_lastLodCamPos.distanceToSquared(this.camera.position) > 0.06) {
       _lastLodCamPos.copy(this.camera.position);
@@ -1792,6 +2110,26 @@ export class OrbWeaverEngine {
       this.renderer.render(this.scene, this.camera);
     } else {
       this.composer.render();
+    }
+
+    if (!this.isSoftwareGl && !this.perfDownscaled && this.screen === 'playing') {
+      this.perfFrameAccum += rawDt;
+      this.perfFrameCount++;
+      if (this.perfFrameCount >= 45) {
+        const avgDt = this.perfFrameAccum / this.perfFrameCount;
+        this.perfFrameAccum = 0;
+        this.perfFrameCount = 0;
+        const curPr = this.renderer.getPixelRatio();
+        if (avgDt > 0.0285 && curPr > 1.05) {
+          const nextPr = Math.max(1.0, Number((curPr - 0.15).toFixed(2)));
+          this.renderer.setPixelRatio(nextPr);
+          this.composer?.setPixelRatio(nextPr);
+          const w = Math.max(1, this.container.clientWidth);
+          const h = Math.max(1, this.container.clientHeight);
+          this.world.pondWaterUniforms.uResolution.value.set(w * nextPr, h * nextPr);
+          this.perfDownscaled = true;
+        }
+      }
     }
 
     if (this.isSoftwareGl) {
@@ -1842,19 +2180,23 @@ export class OrbWeaverEngine {
 
     const diffCfg = DIFFICULTY_CONFIGS[this.settings.difficulty];
 
-    // 1. Weather cycle
+    // 1. Weather cycle + Chapter 3 wind warning telegraph
     this.weatherTimer += dt;
     if (this.chapter === 'ch3_great_pattern') {
       const period = 18;
       const cycle = this.weatherTimer % period;
       const calmThreshold = period * (1 - diffCfg.windGustDurationRatio);
       this.weather = cycle > calmThreshold ? 'gusty' : 'calm';
+      this.windWarning = cycle > calmThreshold - 2.8 && cycle <= calmThreshold;
       this.windStrength =
         this.weather === 'gusty'
           ? 0.72 + Math.sin(elapsed * 3.2) * 0.18
-          : 0.18 + Math.sin(elapsed * 1.1) * 0.06;
+          : this.windWarning
+            ? 0.38 + Math.sin(elapsed * 2.1) * 0.08
+            : 0.18 + Math.sin(elapsed * 1.1) * 0.06;
     } else {
       this.weather = 'calm';
+      this.windWarning = false;
       this.windStrength = 0.15 + Math.sin(elapsed * 1.2) * 0.05;
     }
 
@@ -1885,14 +2227,22 @@ export class OrbWeaverEngine {
       this.tryExecuteJump();
     }
 
+    this.dashCooldown = Math.max(0, this.dashCooldown - dt);
+    this.dashTimer = Math.max(0, this.dashTimer - dt);
+    this.dashIFrameTimer = Math.max(0, this.dashIFrameTimer - dt);
+    this.waspPostDiveCooldown = Math.max(0, this.waspPostDiveCooldown - dt);
+    this.waspHitInvulnTimer = Math.max(0, this.waspHitInvulnTimer - dt);
+
     let isMoving = false;
     const spiderRadius = 0.42;
+    this.cachedNearAnchor = this.findNearestAnchor(3.75);
     if (this.grappleActive) {
       this.grappleProgress = Math.min(1, this.grappleProgress + dt * 2.4);
       const t = this.grappleProgress;
       this.spiderPos.lerpVectors(this.grappleStart, this.grappleEnd, t);
       this.spiderPos.y += Math.sin(t * Math.PI) * 2.3;
       this.isGrounded = false;
+      this.onSilkBridge = false;
       if (t >= 1) {
         this.grappleActive = false;
         resolveObstacleCollisions(this.spiderPos, spiderRadius, this.world.colliders);
@@ -1931,6 +2281,12 @@ export class OrbWeaverEngine {
         this.spiderYaw += diff * Math.min(1, dt * 12);
       }
 
+      if (this.dashTimer > 0) {
+        isMoving = true;
+        this.spiderPos.x += this.dashDir.x * 13.5 * dt;
+        this.spiderPos.z += this.dashDir.y * 13.5 * dt;
+      }
+
       if (this.knockbackVel.lengthSq() > 0.001) {
         this.spiderPos.x += this.knockbackVel.x * dt;
         this.spiderPos.z += this.knockbackVel.z * dt;
@@ -1940,26 +2296,24 @@ export class OrbWeaverEngine {
       // Solid collision resolution against trees, rocks, boulders, and Old Stump
       resolveObstacleCollisions(this.spiderPos, spiderRadius, this.world.colliders);
 
-      if (this.isGrounded && isMoving) {
-        this.walkDistance += Math.hypot(
-          this.spiderPos.x - prevX,
-          this.spiderPos.z - prevZ,
-        );
-        const stepPhase = Math.floor(this.walkDistance * 2.75);
-        if (stepPhase !== this.lastStepPhase) {
-          this.lastStepPhase = stepPhase;
-          this.sound.playGrassStep(this.hiddenInNettle, this.currentZone);
-        }
-      }
+      // Gravity, Grounding & Silk Tightrope Walking along elevated spun strands
+      const groundY = this.surfaceHeightAt(this.spiderPos.x, this.spiderPos.z);
+      const bridge = computeSilkBridgeHeight(
+        this.spiderPos.x,
+        this.spiderPos.z,
+        this.spiderPos.y,
+        this.strands,
+        this.anchorPosMap,
+      );
+      const surfaceY = bridge.height !== null ? Math.max(groundY, bridge.height) : groundY;
+      const wasGrounded = this.isGrounded;
 
-      // Gravity & Grounding
-      const surfaceY = this.surfaceHeightAt(this.spiderPos.x, this.spiderPos.z);
       if (!this.isGrounded || this.spiderVelY > 0.05) {
         this.spiderVelY -= 19.5 * dt;
         this.spiderPos.y += this.spiderVelY * dt;
         if (this.spiderPos.y <= surfaceY) {
           this.spiderPos.y = surfaceY;
-          if (!this.isGrounded && this.spiderVelY < -2.2) {
+          if (!wasGrounded && this.spiderVelY < -2.2) {
             this.spiderSquashY = 0.76;
             this.sound.playLand();
             this.burstMotes(this.spiderPos, 4, 0.12);
@@ -1974,12 +2328,66 @@ export class OrbWeaverEngine {
           this.spiderPos.y = THREE.MathUtils.damp(this.spiderPos.y, surfaceY, 16, dt);
         }
       }
+
+      this.onSilkBridge =
+        this.isGrounded && bridge.height !== null && bridge.height > groundY + 0.12;
+      if (this.onSilkBridge && !this.shownBridgeHint) {
+        this.shownBridgeHint = true;
+        this.setWhisper('pavutin', 'silk_bridge', undefined, 5.5);
+      }
+
+      if (this.isGrounded && isMoving) {
+        this.walkDistance += Math.hypot(
+          this.spiderPos.x - prevX,
+          this.spiderPos.z - prevZ,
+        );
+        const stepPhase = Math.floor(this.walkDistance * 2.75);
+        if (stepPhase !== this.lastStepPhase) {
+          this.lastStepPhase = stepPhase;
+          if (this.onSilkBridge) {
+            this.sound.playSilkStep();
+            this.burstMotes(this.spiderPos, 2, 0.08);
+          } else {
+            this.sound.playGrassStep(this.hiddenInNettle, this.currentZone);
+          }
+        }
+      }
     }
 
-    // 3. Location Zone & Nettle Stealth Cover
-    this.hiddenInNettle = this.world.nettleZones.some(
-      (nz) => Math.hypot(this.spiderPos.x - nz.x, this.spiderPos.z - nz.z) <= nz.radius,
-    );
+    // Advance pattern durability wear & calm moon-dew regeneration
+    const windDecayScale = this.dewQuest.completed ? 0.65 : 1.0;
+    if (stepPatternDurability(this.patterns, dt, this.weather === 'gusty', windDecayScale)) {
+      this.patternById.clear();
+      for (let i = 0; i < this.patterns.length; i++) {
+        this.patternById.set(this.patterns[i].id, this.patterns[i]);
+      }
+    }
+    const dewRegen = stepWebDewRegeneration({
+      patterns: this.patterns,
+      dt,
+      isCalm: this.weather === 'calm',
+      dewTempered: this.dewQuest.completed,
+      accumulator: this.dewRegenAccumulator,
+      silk: this.silk,
+      maxSilk: this.maxSilk,
+    });
+    this.dewRegenAccumulator = dewRegen.nextAccumulator;
+    if (dewRegen.silkGained > 0) {
+      this.silk = Math.min(this.maxSilk, this.silk + dewRegen.silkGained);
+    }
+
+    // 3. Location Zone & Nettle Stealth Cover (squared-distance check)
+    let inNettle = false;
+    for (let i = 0; i < this.world.nettleZones.length; i++) {
+      const nz = this.world.nettleZones[i];
+      const dx = this.spiderPos.x - nz.x;
+      const dz = this.spiderPos.z - nz.z;
+      if (dx * dx + dz * dz <= nz.radius * nz.radius) {
+        inNettle = true;
+        break;
+      }
+    }
+    this.hiddenInNettle = inNettle;
     this.currentZone = detectLocationZone(this.spiderPos, this.world.nettleZones);
 
     // 4. Chapter progression
@@ -1998,8 +2406,32 @@ export class OrbWeaverEngine {
     });
     this.fear = Math.round(fearState.intensity * 100);
 
+    // Passive calm composure recovery while safely hidden or out of danger
+    const underSnagCover =
+      !isMoving &&
+      Math.abs(this.spiderPos.x) < 4.3 &&
+      Math.abs(this.spiderPos.z - 0.3) < 1.35 &&
+      this.spiderPos.y < 1.05;
+    if (
+      this.waspState !== 'dive' &&
+      this.fear < 14 &&
+      this.composure < this.maxComposure
+    ) {
+      this.calmRegenTimer += dt * (inNettle || underSnagCover ? 1.5 : 1.0);
+      if (this.calmRegenTimer >= 18) {
+        this.composure = Math.min(this.maxComposure, this.composure + 1);
+        this.calmRegenTimer = 0;
+        this.pushHud(true);
+      }
+    } else if (this.waspState === 'dive') {
+      this.calmRegenTimer = 0;
+    }
+
     const nearestDecoy = this.patterns.find((p) => p.shape === 'decoy')?.center || null;
     const prevWaspState = this.waspState;
+    const isDodging =
+      this.dashIFrameTimer > 0 ||
+      (!this.isGrounded && this.spiderPos.y > this.waspPos.y + 0.45);
     const aiStep = stepWaspAI({
       state: this.waspState,
       stateTimer: this.waspTimer,
@@ -2007,22 +2439,52 @@ export class OrbWeaverEngine {
       spiderPos: this.spiderPos,
       waspPos: this.waspPos,
       isHiddenInNettle: this.hiddenInNettle,
+      isMoving,
+      isDodging,
       leafRippleRisk: fearState.leafRippleRisk,
       nearestDecoyPos: nearestDecoy,
       chapter: this.chapter,
       detectionScale: diffCfg.waspDetectionScale,
+      diveHitCommitted: this.waspDiveHitCommitted,
+      postDiveCooldown: this.waspPostDiveCooldown,
+      diveTargetPos: this.waspState === 'dive' ? this.waspDiveTarget : null,
     });
     this.waspState = aiStep.nextState;
     this.waspTimer = aiStep.nextTimer;
 
     if (prevWaspState !== this.waspState) {
-      this.onWaspStateChanged(prevWaspState, this.waspState);
+      this.onWaspStateChanged(prevWaspState, this.waspState, isMoving);
     }
-    if (aiStep.triggeredDiveHit) {
+    if (aiStep.dodgedDive) {
+      this.waspPostDiveCooldown = 4.2;
+      this.silk = Math.min(this.maxSilk, this.silk + 5);
+      this.setWhisper('pavutin', 'wasp_dodged', undefined, 4.2);
+      this.burstMotes(this.spiderPos, 8, 0.2);
+    }
+    if (aiStep.triggeredDiveHit && this.waspHitInvulnTimer <= 0) {
+      this.waspDiveHitCommitted = true;
+      this.waspHitInvulnTimer = 2.6;
+      this.waspPostDiveCooldown = 4.2;
       this.onWaspKnocksPavutin();
     }
 
-    this.stepWaspMotion(dt, elapsed, nearestDecoy, diffCfg.waspSpeedScale);
+    this.waspWebSlowTimer = Math.max(0, this.waspWebSlowTimer - dt);
+    if (
+      this.waspState !== 'absent' &&
+      this.waspState !== 'departed' &&
+      this.waspState !== 'lured' &&
+      this.waspWebSlowTimer <= 0 &&
+      isWaspSnaredInWeb(this.waspPos, this.patterns)
+    ) {
+      this.waspWebSlowTimer = 4.2;
+      this.sound.playSilkPluck(2.2);
+      this.burstMotes(this.waspPos, 8, 0.22);
+      this.setWhisper('pavutin', 'wasp_web_snared', undefined, 3.8);
+    }
+
+    const effectiveWaspSpeed =
+      diffCfg.waspSpeedScale * (this.waspWebSlowTimer > 0 ? 0.78 : 1.0);
+    this.stepWaspMotion(dt, elapsed, nearestDecoy, effectiveWaspSpeed);
     this.sound.updateWaspBuzz({
       active: this.waspState !== 'absent' && this.waspState !== 'departed',
       distance: this.waspPos.distanceTo(this.spiderPos),
@@ -2080,14 +2542,17 @@ export class OrbWeaverEngine {
     }
   }
 
-  private onWaspStateChanged(prev: WaspState, next: WaspState): void {
+  private onWaspStateChanged(prev: WaspState, next: WaspState, isMoving = false): void {
     if (next === 'perch') {
       this.setWhisper('uspokh', 'wasp_perch', undefined, 5.5);
     } else if (next === 'lured') {
       this.setWhisper('pavutin', 'wasp_lured', undefined, 5);
     } else if (next === 'departed' && prev === 'lured') {
       const idx = this.patterns.findIndex((p) => p.shape === 'decoy');
-      if (idx !== -1) this.patterns.splice(idx, 1);
+      if (idx !== -1) {
+        const [removed] = this.patterns.splice(idx, 1);
+        if (removed) this.patternById.delete(removed.id);
+      }
 
       if (!this.hasGrapple) {
         this.hasGrapple = true;
@@ -2097,14 +2562,25 @@ export class OrbWeaverEngine {
         this.setWhisper('pavutin', 'wasp_departed_quick', undefined, 4);
       }
     } else if (next === 'investigate') {
-      this.setWhisper('pavutin', 'wasp_investigate', undefined, 4);
+      if (!this.shownStillStealthHint) {
+        this.shownStillStealthHint = true;
+        this.setWhisper('uspokh', 'still_stealth', undefined, 5);
+      } else {
+        this.setWhisper('pavutin', 'wasp_investigate', undefined, 4);
+      }
+    } else if (next === 'dive') {
+      this.waspDiveTarget.copy(this.spiderPos);
+      this.waspDiveHitCommitted = false;
+      this.sound.playWaspDiveTelegraph();
+    } else if (next === 'patrol' && prev === 'investigate' && (!isMoving || this.hiddenInNettle)) {
+      this.setWhisper('pavutin', 'wasp_lost_sight', undefined, 4.5);
     }
     this.wasp.root.visible = next !== 'absent' && next !== 'departed';
   }
 
   private onWaspKnocksPavutin(): void {
-    this.hitstopTimer = 0.06;
-    this.trauma = 0.8;
+    this.hitstopTimer = this.settings.reducedEffects ? 0 : 0.06;
+    this.trauma = this.settings.reducedEffects ? 0 : 0.8;
     this.composure = Math.max(0, this.composure - 1);
     this.activeThreadFrom = null;
     this.trailingFilamentMesh.visible = false;
@@ -2165,18 +2641,37 @@ export class OrbWeaverEngine {
     } else if (this.waspState === 'investigate') {
       target.set(
         this.spiderPos.x + Math.sin(elapsed * 2) * 1.4,
-        this.spiderPos.y + 2.0,
+        this.spiderPos.y + 2.1,
         this.spiderPos.z + Math.cos(elapsed * 2) * 1.4,
       );
     } else if (this.waspState === 'dive') {
-      target.set(this.spiderPos.x, this.spiderPos.y + 0.75, this.spiderPos.z);
+      if (this.waspTimer < 0.58) {
+        // Hover lock-on windup high above the committed target point
+        target.set(
+          this.waspDiveTarget.x,
+          this.waspDiveTarget.y + 2.55,
+          this.waspDiveTarget.z,
+        );
+      } else {
+        // Committed swoop toward the telegraphed impact point
+        target.set(
+          this.waspDiveTarget.x,
+          this.waspDiveTarget.y + 0.55,
+          this.waspDiveTarget.z,
+        );
+      }
     }
 
     _v2.subVectors(target, this.waspPos);
     const dist = _v2.length();
     if (dist > 0.05) {
       _v2.normalize();
-      const speed = (this.waspState === 'dive' ? 11.5 : 5.4) * speedScale;
+      const speed =
+        (this.waspState === 'dive'
+          ? this.waspTimer < 0.58
+            ? 6.4
+            : 12.2
+          : 5.4) * speedScale;
       this.waspPos.addScaledVector(_v2, Math.min(dist, speed * dt));
       this.wasp.root.rotation.y = Math.atan2(_v2.x, _v2.z);
     }
@@ -2201,9 +2696,16 @@ export class OrbWeaverEngine {
     this.wasp.blurFans[0].visible = !isPerched;
     this.wasp.blurFans[1].visible = !isPerched;
     if (!isPerched) {
-      const blurPulse = 0.25 + Math.abs(Math.cos(elapsed * 32)) * 0.22;
-      (this.wasp.blurFans[0].material as THREE.MeshStandardMaterial).opacity = blurPulse;
+      this.wasp.blurMat.opacity = 0.25 + Math.abs(Math.cos(elapsed * 32)) * 0.22;
     }
+
+    const wingEmissive = isDiving
+      ? 0xc43a18
+      : this.waspState === 'investigate'
+        ? 0x9c5a18
+        : 0x5c441c;
+    this.wasp.wingMat.emissive.setHex(wingEmissive);
+    this.wasp.blurMat.emissive.setHex(wingEmissive);
 
     // Menacing gaster curve & antennae twitch
     this.wasp.abdomen.rotation.x = isDiving
@@ -2212,9 +2714,25 @@ export class OrbWeaverEngine {
     this.wasp.antennae[0].rotation.x = Math.sin(elapsed * 9) * 0.14;
     this.wasp.antennae[1].rotation.x = -Math.sin(elapsed * 9) * 0.14;
 
-    const gy = groundHeightAt(this.waspPos.x, this.waspPos.z);
-    const hAbove = this.waspPos.y - gy;
-    this.wasp.shadowDisc.position.set(0, -hAbove + 0.03, 0);
+    if (isDiving) {
+      const gy = groundHeightAt(this.waspDiveTarget.x, this.waspDiveTarget.z);
+      this.wasp.shadowDisc.position.set(
+        this.waspDiveTarget.x - this.waspPos.x,
+        -(this.waspPos.y - gy) + 0.03,
+        this.waspDiveTarget.z - this.waspPos.z,
+      );
+      this.wasp.shadowDisc.scale.setScalar(1.75 + Math.sin(elapsed * 16) * 0.22);
+      this.wasp.shadowDiscMat.color.setHex(0xff5e36);
+    } else {
+      const gy = groundHeightAt(this.waspPos.x, this.waspPos.z);
+      const hAbove = this.waspPos.y - gy;
+      this.wasp.shadowDisc.position.set(0, -hAbove + 0.03, 0);
+      const isInvestigating = this.waspState === 'investigate';
+      this.wasp.shadowDisc.scale.setScalar(
+        isInvestigating ? 1.42 + Math.sin(elapsed * 12) * 0.12 : 1.0,
+      );
+      this.wasp.shadowDiscMat.color.setHex(isInvestigating ? 0xffb65c : 0xffffff);
+    }
   }
 
   private stepFlies(dt: number, elapsed: number): void {
@@ -2237,15 +2755,24 @@ export class OrbWeaverEngine {
       const f = this.flies[i];
       f.phase += dt * 18;
 
-      if (f.caughtPatternId && f.pos.distanceTo(this.spiderPos) < 1.35) {
-        this.tryHarvestNearbyFly();
+      if (!this.isGrounded && f.pos.distanceTo(this.spiderPos) < 1.88) {
+        this.tryHarvestNearbyFly(true, f);
         continue;
       }
 
+      if (f.caughtPatternId && f.pos.distanceTo(this.spiderPos) < 1.35) {
+        this.tryHarvestNearbyFly(false, f);
+        continue;
+      }
+
+      f.rig.silkWrapMesh.visible = Boolean(f.caughtPatternId);
+      let flyGroundY: number | null = null;
       if (f.caughtPatternId) {
-        const pat = this.patterns.find((p) => p.id === f.caughtPatternId);
+        f.rig.silkWrapMesh.rotation.z = f.phase * 0.4;
+        const pat = this.patternById.get(f.caughtPatternId);
         if (!pat) {
           f.caughtPatternId = null;
+          f.rig.silkWrapMesh.visible = false;
           continue;
         }
         f.pos.set(
@@ -2257,6 +2784,7 @@ export class OrbWeaverEngine {
         f.escapeTimer -= dt;
         if (f.escapeTimer <= 0 && f.species === 'nimble') {
           f.caughtPatternId = null;
+          f.rig.silkWrapMesh.visible = false;
           f.vel.set(2.5, 1.2, -2.5);
         }
       } else {
@@ -2264,8 +2792,10 @@ export class OrbWeaverEngine {
         let bestDist = 999;
         for (const pat of this.patterns) {
           if (pat.shape === 'decoy') continue;
+          const affinity = computePatternSpeciesAffinity(pat.shape, f.species);
+          const effRadius = pat.lureRadius * affinity;
           const d = Math.hypot(f.pos.x - pat.center.x, f.pos.z - pat.center.z);
-          if (d < pat.lureRadius && d < bestDist) {
+          if (d < effRadius && d < bestDist) {
             bestDist = d;
             targetPat = pat;
           }
@@ -2275,8 +2805,12 @@ export class OrbWeaverEngine {
           _v1.set(targetPat.center.x, targetPat.center.y + 0.35, targetPat.center.z).sub(f.pos);
           if (_v1.length() < 0.75) {
             f.caughtPatternId = targetPat.id;
+            f.escapeTimer =
+              (f.species === 'nimble' ? 9 : 14) * (0.65 + targetPat.strength * 0.7);
           } else {
-            _v1.normalize().multiplyScalar(2.8);
+            const pullSpeed =
+              2.8 * computePatternSpeciesAffinity(targetPat.shape, f.species);
+            _v1.normalize().multiplyScalar(pullSpeed);
             f.vel.lerp(_v1, dt * 3.5);
           }
         } else if (f.species === 'tearbearer') {
@@ -2301,8 +2835,11 @@ export class OrbWeaverEngine {
         f.pos.addScaledVector(f.vel, dt);
         f.pos.x = THREE.MathUtils.clamp(f.pos.x, -18, 18);
         f.pos.z = THREE.MathUtils.clamp(f.pos.z, -18, 10);
-        const gy = groundHeightAt(f.pos.x, f.pos.z);
-        f.pos.y = Math.max(gy + 0.85, Math.min(gy + 2.8, f.pos.y + Math.sin(f.phase * 0.32) * dt * 0.65));
+        flyGroundY = groundHeightAt(f.pos.x, f.pos.z);
+        f.pos.y = Math.max(
+          flyGroundY + 0.85,
+          Math.min(flyGroundY + 2.8, f.pos.y + Math.sin(f.phase * 0.32) * dt * 0.65),
+        );
         f.rig.body.rotation.z = THREE.MathUtils.clamp(-f.vel.x * 0.12, -0.28, 0.28);
       }
 
@@ -2326,7 +2863,7 @@ export class OrbWeaverEngine {
       f.rig.halteres[0].position.y = 0.04 + Math.cos(elapsed * 58 + f.phase) * 0.015;
       f.rig.halteres[1].position.y = 0.04 - Math.cos(elapsed * 58 + f.phase) * 0.015;
 
-      const gy = groundHeightAt(f.pos.x, f.pos.z);
+      const gy = flyGroundY ?? groundHeightAt(f.pos.x, f.pos.z);
       f.rig.shadowDisc.position.y = -(f.pos.y - gy) + 0.025;
     }
   }
@@ -2367,6 +2904,23 @@ export class OrbWeaverEngine {
       ? THREE.MathUtils.clamp(-this.spiderVelY * 0.06, -0.35, 0.35)
       : Math.sin(breathPhase + 0.4) * 0.048 + combat * 0.14;
 
+    // Live setae (hair) sensory vibration: vertex harmonic wave + subtle micro-rotation oscillation
+    const setaeAmp = computeSetaeVibrationAmp({
+      breathPulse,
+      combatBlend: combat,
+      fearIntensity: this.fear / 100,
+      windStrength: this.windStrength,
+      isGrounded: this.isGrounded,
+    });
+    this.pavutin.setaeUniforms.uSetaeTime.value = elapsed;
+    this.pavutin.setaeUniforms.uSetaeAmp.value = setaeAmp;
+    const bristleSpin = 0.012 + combat * 0.014 + (this.fear / 100) * 0.012;
+    this.pavutin.abdSetaeGroup.rotation.x = Math.sin(elapsed * 6.4) * bristleSpin;
+    this.pavutin.abdSetaeGroup.rotation.z = Math.cos(elapsed * 5.2) * bristleSpin * 0.85;
+    this.pavutin.cephSetaeGroup.rotation.x = Math.sin(elapsed * 7.6 + 0.8) * bristleSpin * 0.9;
+    this.pavutin.cephSetaeGroup.rotation.y = Math.cos(elapsed * 6.1) * bristleSpin * 0.7;
+
+    this.idleTapSoundCooldown = Math.max(0, this.idleTapSoundCooldown - dt);
     const gaitFreq = 8.5;
     for (const leg of this.pavutin.legs) {
       if (!this.isGrounded) {
@@ -2387,6 +2941,25 @@ export class OrbWeaverEngine {
           ? Math.max(0, Math.cos(this.walkDistance * gaitFreq + phaseOffset))
           : 0;
 
+        // Idle front-leg sensory soil tapping when Pavutin stands motionless on the ground
+        const isIdleStanding = !isMoving && this.isGrounded && !this.grappleActive;
+        const tapPulse = computeIdleTapPulse(elapsed, leg.index, leg.side, isIdleStanding);
+        if (leg.index === 0) {
+          const tapIdx = leg.side === -1 ? 0 : 1;
+          const prevTap = this.lastIdleTapPulses[tapIdx];
+          this.lastIdleTapPulses[tapIdx] = tapPulse;
+          if (
+            this.screen === 'playing' &&
+            isIdleStanding &&
+            prevTap >= 0.42 &&
+            tapPulse < 0.42 &&
+            this.idleTapSoundCooldown <= 0
+          ) {
+            this.sound.playPawTap();
+            this.idleTapSoundCooldown = 0.42;
+          }
+        }
+
         // Combat pounce stance: front legs raise & spread defensively/predatorily, back legs brace wide
         const frontRaise =
           leg.index === 0 ? combat : leg.index === 1 ? combat * 0.45 : 0;
@@ -2394,19 +2967,19 @@ export class OrbWeaverEngine {
         const stanceJitter = frontRaise * Math.sin(elapsed * 12 + leg.side) * 0.06;
 
         leg.hip.rotation.z =
-          leg.side * (lift * 0.26 - frontRaise * 0.46 + rearBrace * 0.12) +
+          leg.side * (lift * 0.26 - frontRaise * 0.46 + rearBrace * 0.12 - tapPulse * 0.24) +
           stanceJitter;
         leg.hip.rotation.x =
-          swing * 0.34 - frontRaise * 0.42 + rearBrace * 0.2;
+          swing * 0.34 - frontRaise * 0.42 + rearBrace * 0.2 - tapPulse * 0.2;
         leg.knee.rotation.z =
-          leg.side * (lift * 0.22 - frontRaise * 0.24);
+          leg.side * (lift * 0.22 - frontRaise * 0.24 + tapPulse * 0.28);
         leg.ankle.rotation.z =
-          -leg.side * (lift * 0.16 + frontRaise * 0.18);
+          -leg.side * (lift * 0.16 + frontRaise * 0.18 + tapPulse * 0.24);
       }
     }
 
     const nearInteract =
-      this.screen === 'playing' && !isMoving && this.findNearestAnchor(3.4) !== null ? 0.55 : 0;
+      this.screen === 'playing' && !isMoving && this.cachedNearAnchor !== null ? 0.55 : 0;
     const palpSpeed = 3.4 + combat * 7.5 + nearInteract * 2.5;
     const palpAmp = 0.14 + combat * 0.12 + nearInteract * 0.06;
     const palpWave = Math.sin(elapsed * palpSpeed) * palpAmp;
@@ -2427,12 +3000,18 @@ export class OrbWeaverEngine {
     this.pavutin.shadowDisc.scale.setScalar(shadowScale);
 
     const silkRatio = this.silk / this.maxSilk;
-    this.pavutin.silkGlowMat.emissiveIntensity = 0.28 + silkRatio * 1.2 + combat * 0.45;
+    const invulnPulse =
+      this.waspHitInvulnTimer > 0 || this.dashIFrameTimer > 0
+        ? 0.9 + Math.abs(Math.sin(elapsed * 18)) * 0.75
+        : 0;
+    this.pavutin.silkGlowMat.emissiveIntensity =
+      0.28 + silkRatio * 1.2 + combat * 0.45 + invulnPulse;
   }
 
   private updateTargetingVisuals(elapsed: number): void {
-    const near = this.findNearestAnchor(3.75);
-    const nearFly = this.flies.find((f) => f.pos.distanceTo(this.spiderPos) < 3.0);
+    const near = this.cachedNearAnchor ?? this.findNearestAnchor(3.75);
+    const flyReach = this.isGrounded ? 3.0 : 3.55;
+    const nearFly = this.flies.find((f) => f.pos.distanceTo(this.spiderPos) < flyReach);
 
     // Subtle organic firefly-pollen spores drifting gently near interactable fly or twig fork
     if (this.screen === 'playing' && nearFly) {
@@ -2491,8 +3070,14 @@ export class OrbWeaverEngine {
     u.body.scale.set(1 + breath * 0.018, 1 - breath * 0.012, 1 + breath * 0.018);
 
     u.abdomen.rotation.x = Math.sin(elapsed * 1.9 + 0.35) * 0.055;
+    u.setaeUniforms.uSetaeTime.value = elapsed;
+    u.setaeUniforms.uSetaeAmp.value = 0.0042 + Math.abs(breath) * 0.002;
+    u.abdSetaeGroup.rotation.x = Math.sin(elapsed * 4.8) * 0.009;
+    u.cephSetaeGroup.rotation.x = Math.cos(elapsed * 5.2) * 0.008;
+
     u.pedipalps[0].rotation.x = Math.sin(elapsed * 2.8 * talkingBoost) * 0.18;
     u.pedipalps[1].rotation.x = -Math.sin(elapsed * 2.8 * talkingBoost) * 0.18;
+    u.pedipalps[0].rotation.y = Math.sin(elapsed * 1.6) * 0.02;
     u.chelicerae[0].rotation.z = Math.sin(elapsed * 1.6) * 0.05;
     u.chelicerae[1].rotation.z = -Math.sin(elapsed * 1.6) * 0.05;
     for (const leg of u.legs) {
@@ -2504,6 +3089,29 @@ export class OrbWeaverEngine {
       this.whisperSpeaker === 'uspokh' && this.whisperTimer > 0
         ? 0.85 + Math.sin(elapsed * 4) * 0.25
         : 0.45;
+  }
+
+  private updateHeroRimLight(elapsed: number): void {
+    const dx = this.spiderPos.x - this.camera.position.x;
+    const dz = this.spiderPos.z - this.camera.position.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const fx = dx / len;
+    const fz = dz / len;
+    const rx = -fz;
+    const rz = fx;
+    this.heroRimLight.position.set(
+      this.spiderPos.x + fx * 2.55 + rx * 0.48,
+      this.spiderPos.y + 1.56,
+      this.spiderPos.z + fz * 2.55 + rz * 0.48,
+    );
+    this.heroRimLight.target.position.set(
+      this.spiderPos.x,
+      this.spiderPos.y + 0.28,
+      this.spiderPos.z,
+    );
+    const tierRimBoost = this.settings.graphics === 'cinematic' ? 1.55 : 0;
+    this.heroRimLight.intensity =
+      5.6 + tierRimBoost + this.combatStanceBlend * 1.45 + Math.sin(elapsed * 2.2) * 0.28;
   }
 
   private stepAmbientVisuals(dt: number, elapsed: number): void {
@@ -2547,8 +3155,9 @@ export class OrbWeaverEngine {
     );
     this.camLook.lerp(_lookTarget, k);
 
-    const shakeSq = this.trauma * this.trauma;
-    const fearTremor = this.fear > 25 ? ((this.fear - 25) / 75) * 0.032 : 0;
+    const shakeSq = this.settings.reducedEffects ? 0 : this.trauma * this.trauma;
+    const fearTremor =
+      !this.settings.reducedEffects && this.fear > 25 ? ((this.fear - 25) / 75) * 0.032 : 0;
     const jx = (Math.random() - 0.5) * (shakeSq * 0.45 + fearTremor);
     const jy = (Math.random() - 0.5) * (shakeSq * 0.45 + fearTremor);
 
@@ -2558,16 +3167,20 @@ export class OrbWeaverEngine {
 
   private updateMotes(dt: number, elapsed: number): void {
     let ambientShown = 0;
+    let maxUsedIdx = -1;
     for (let i = 0; i < this.motes.length; i++) {
       const m = this.motes[i];
       if (!m.active || (m.ambient && ambientShown >= this.activeAmbientMotesLimit)) {
-        _dummy.position.set(0, -100, 0);
-        _dummy.scale.setScalar(0.001);
-        _dummy.updateMatrix();
-        this.motesMesh.setMatrixAt(i, _dummy.matrix);
+        if (i < this.motesMesh.count) {
+          _dummy.position.set(0, -100, 0);
+          _dummy.scale.setScalar(0.001);
+          _dummy.updateMatrix();
+          this.motesMesh.setMatrixAt(i, _dummy.matrix);
+        }
         continue;
       }
       if (m.ambient) ambientShown++;
+      maxUsedIdx = i;
 
       m.life += dt;
       if (m.ambient) {
@@ -2611,14 +3224,48 @@ export class OrbWeaverEngine {
       _dummy.updateMatrix();
       this.motesMesh.setMatrixAt(i, _dummy.matrix);
     }
+    this.motesMesh.count = Math.max(0, maxUsedIdx + 1);
     this.motesMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  private updateWindStreaks(dt: number, elapsed: number): void {
+    const inst = this.world.windStreaksInst;
+    if (!inst.visible) return;
+    const strength = this.windStrength;
+    const show = strength > 0.22 || this.windWarning || this.weather === 'gusty';
+    const mat = inst.material as THREE.MeshStandardMaterial;
+    mat.opacity = show
+      ? Math.min(0.42, 0.08 + strength * 0.34 + (this.windWarning ? 0.08 : 0))
+      : 0.05;
+    const speedMult = this.weather === 'gusty' ? 2.6 : this.windWarning ? 1.55 : 0.7;
+
+    for (let i = 0; i < this.windStreaks.length; i++) {
+      const ws = this.windStreaks[i];
+      ws.x += ws.speed * speedMult * dt;
+      ws.z += ws.speed * speedMult * 0.28 * dt;
+      if (ws.x > 18) ws.x = -18;
+      if (ws.z > 14) ws.z = -18;
+
+      _dummy.position.set(
+        ws.x,
+        ws.y + Math.sin(elapsed * 2.4 + ws.phase) * 0.14,
+        ws.z,
+      );
+      _dummy.rotation.set(0.18, -0.26, 0.04);
+      const sx = ws.len * (0.55 + strength * 1.45);
+      const sy = show ? 0.8 + strength * 0.65 : 0.35;
+      _dummy.scale.set(sx, sy, 1);
+      _dummy.updateMatrix();
+      inst.setMatrixAt(i, _dummy.matrix);
+    }
+    inst.instanceMatrix.needsUpdate = true;
   }
 
   private pushHud(force: boolean): void {
     this.lastHudPush = this.simElapsed;
     if (!force && this.disposed) return;
 
-    const nearAnchor = this.findNearestAnchor(3.75);
+    const nearAnchor = this.cachedNearAnchor ?? this.findNearestAnchor(3.75);
     const grappleTarget = this.findNearestGrappleAnchor();
     const canClose = Boolean(
       this.activeThreadFrom &&
@@ -2626,14 +3273,142 @@ export class OrbWeaverEngine {
         nearAnchor.id !== this.activeThreadFrom.id &&
         this.findClosedLoop(nearAnchor.id, this.activeThreadFrom.id),
     );
+    const canRepairPattern = Boolean(
+      !this.activeThreadFrom &&
+        nearAnchor &&
+        this.silk >= 3 &&
+        this.findWornPatternAtAnchor(nearAnchor.id),
+    );
+    const flyReach = this.isGrounded ? 3.0 : 3.55;
     const canHarvestFly = this.flies.some(
-      (f) => f.pos.distanceTo(this.spiderPos) < 3.0,
+      (f) => f.pos.distanceTo(this.spiderPos) < flyReach,
     );
     const music = this.sound.getMusicStatus();
 
     const bearingStrands = this.strands.filter((s) => s.isBearing);
     const hasAnchorDone = (id: string) =>
       bearingStrands.some((s) => s.fromId === id || s.toId === id);
+
+    const waspActive = this.waspState !== 'absent' && this.waspState !== 'departed';
+    const waspDistExact = this.waspPos.distanceTo(this.spiderPos);
+    const waspAlertLevel = !waspActive
+      ? 0
+      : this.waspState === 'dive'
+        ? 1.0
+        : this.waspState === 'investigate'
+          ? 0.7
+          : this.waspState === 'patrol'
+            ? 0.35
+            : 0;
+
+    // Project Pavutin crown for contextual Whisper thought placement
+    _v1.set(this.spiderPos.x, this.spiderPos.y + 0.72, this.spiderPos.z);
+    _v1.project(this.camera);
+    const spiderScreenPos =
+      _v1.z >= -1 && _v1.z <= 1
+        ? {
+            xPct: THREE.MathUtils.clamp((_v1.x * 0.5 + 0.5) * 100, 14, 86),
+            yPct: THREE.MathUtils.clamp((-_v1.y * 0.5 + 0.5) * 100, 16, 78),
+          }
+        : null;
+
+    // Spider-Web Radar Blips (maxRange 22 units)
+    const radarBlips: RadarBlip[] = [];
+    const playerV = { x: this.spiderPos.x, y: this.spiderPos.y, z: this.spiderPos.z };
+    if (waspActive) {
+      const r = projectToRadarCoords(playerV, this.camYaw, this.waspPos, 22);
+      radarBlips.push({
+        id: 'wasp',
+        kind: 'wasp',
+        x: r.x,
+        z: r.z,
+        active: this.waspState === 'dive' || this.waspState === 'investigate',
+      });
+    }
+    for (const anc of this.world.anchors) {
+      if (anc.isGreatAnchor || anc.id === nearAnchor?.id) {
+        const d = Math.hypot(anc.position.x - playerV.x, anc.position.z - playerV.z);
+        if (d < 22) {
+          const r = projectToRadarCoords(playerV, this.camYaw, anc.position, 22);
+          radarBlips.push({
+            id: anc.id,
+            kind: 'anchor',
+            x: r.x,
+            z: r.z,
+            active: anc.id === nearAnchor?.id,
+          });
+        }
+      }
+    }
+    this.world.nettleZones.forEach((nz, idx) => {
+      const d = Math.hypot(nz.x - playerV.x, nz.z - playerV.z);
+      if (d < 22) {
+        const r = projectToRadarCoords(playerV, this.camYaw, { x: nz.x, y: 0, z: nz.z }, 22);
+        radarBlips.push({ id: `nettle-${idx}`, kind: 'nettle', x: r.x, z: r.z });
+      }
+    });
+    for (const pat of this.patterns) {
+      if (pat.shape === 'decoy') {
+        const d = Math.hypot(pat.center.x - playerV.x, pat.center.z - playerV.z);
+        if (d < 22) {
+          const r = projectToRadarCoords(playerV, this.camYaw, pat.center, 22);
+          radarBlips.push({ id: pat.id, kind: 'decoy', x: r.x, z: r.z, active: true });
+        }
+      }
+    }
+    let fliesAdded = 0;
+    for (const f of this.flies) {
+      if (fliesAdded >= 4) break;
+      const d = Math.hypot(f.pos.x - playerV.x, f.pos.z - playerV.z);
+      if (d < 20) {
+        const r = projectToRadarCoords(playerV, this.camYaw, f.pos, 22);
+        radarBlips.push({
+          id: f.id,
+          kind: 'fly',
+          x: r.x,
+          z: r.z,
+          active: Boolean(f.caughtPatternId),
+        });
+        fliesAdded++;
+      }
+    }
+
+    // World-Web Gaze Check: detect if player is looking toward a built or in-progress web in world space
+    let gazeWebShape: PatternShape | null = null;
+    if (this.screen === 'playing') {
+      this.camera.getWorldDirection(_gazeLookDir);
+      let bestDot = 0.78;
+      for (const pat of this.patterns) {
+        _gazeToWeb.set(
+          pat.center.x - this.camera.position.x,
+          pat.center.y - this.camera.position.y,
+          pat.center.z - this.camera.position.z,
+        );
+        const dist = _gazeToWeb.length();
+        if (dist > 0.4 && dist < 26) {
+          _gazeToWeb.divideScalar(dist);
+          const dot = _gazeLookDir.dot(_gazeToWeb);
+          if (dot > bestDot) {
+            bestDot = dot;
+            gazeWebShape = pat.shape;
+          }
+        }
+      }
+      if (!gazeWebShape && this.activeThreadFrom) {
+        _gazeToWeb.set(
+          this.activeThreadFrom.position.x - this.camera.position.x,
+          this.activeThreadFrom.position.y - this.camera.position.y,
+          this.activeThreadFrom.position.z - this.camera.position.z,
+        );
+        const dist = _gazeToWeb.length();
+        if (dist > 0.4 && dist < 22) {
+          _gazeToWeb.divideScalar(dist);
+          if (_gazeLookDir.dot(_gazeToWeb) > 0.82) {
+            gazeWebShape = this.selectedMode;
+          }
+        }
+      }
+    }
 
     this.onHudUpdate({
       screen: this.screen,
@@ -2647,15 +3422,32 @@ export class OrbWeaverEngine {
       fear: this.fear,
       hiddenInNettle: this.hiddenInNettle,
       isGrounded: this.isGrounded,
+      onSilkBridge: this.onSilkBridge,
+      dashCooldownSec: Number(Math.max(0, this.dashCooldown).toFixed(1)),
       selectedMode: this.selectedMode,
       hasGrapple: this.hasGrapple,
       waspState: this.waspState,
-      waspDistance: Math.round(this.waspPos.distanceTo(this.spiderPos)),
+      waspDistance: Math.round(waspDistExact),
+      waspBearingDeg:
+        waspActive && waspDistExact < 22
+          ? computeWaspRelativeBearingDeg(this.spiderPos, this.camYaw, this.waspPos)
+          : null,
+      waspAlertLevel,
+      waspWebSlowed: this.waspWebSlowTimer > 0,
       weather: this.weather,
+      windWarning: this.windWarning,
       windStrength: this.windStrength,
       patternsCount: this.patterns.length,
       fliesCaught: this.fliesCaught,
+      aerialCatches: this.aerialCatches,
       caughtSpecies: { ...this.caughtSpecies },
+      dewQuest: { ...this.dewQuest },
+      unlockedLoreIds: computeUnlockedLoreIds({
+        chapter: this.chapter,
+        greatStrandsDone: bearingStrands.length,
+        dewQuestCompleted: this.dewQuest.completed,
+        caughtSpecies: this.caughtSpecies,
+      }),
       greatStrandsDone: bearingStrands.length,
       greatStrandsTotal: 6,
       greatAnchorsDone: {
@@ -2674,10 +3466,14 @@ export class OrbWeaverEngine {
       activeThreadFromId: this.activeThreadFrom ? this.activeThreadFrom.id : null,
       activeThreadFromLabel: this.activeThreadFrom ? this.activeThreadFrom.label : null,
       canClosePattern: canClose,
+      canRepairPattern,
       canHarvestFly,
       combatStance: this.combatStanceBlend > 0.2,
       canGrappleId: grappleTarget ? grappleTarget.id : null,
       canGrappleLabel: grappleTarget ? grappleTarget.label : null,
+      spiderScreenPos,
+      radarBlips,
+      gazeWebShape,
       musicTrackIndex: music.trackIndex,
       musicTrackId: music.trackId,
       musicIsPlaying: music.isPlaying,

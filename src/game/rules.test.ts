@@ -5,20 +5,37 @@ import {
   canBearingStrandHold,
   checkGreatPatternComplete,
   classifyPattern,
+  computeAerialCatchReward,
   computeCombatStanceBlend,
   computeFearState,
+  computeIdleTapPulse,
   computeLodStage,
   computeMacroFocusDistance,
+  computePatternSpeciesAffinity,
+  computeSetaeVibrationAmp,
+  computeSilkBridgeHeight,
+  computeSilkThreadGauge,
   computeSurfaceHeight,
+  computeUnlockedLoreIds,
+  computeWaspRelativeBearingDeg,
+  createPatternRecord,
   detectLocationZone,
   DIFFICULTY_CONFIGS,
+  GRAPHICS_QUALITY_ORDER,
   groundHeightAt,
+  INITIAL_DEW_QUEST,
+  isWaspSnaredInWeb,
+  projectToRadarCoords,
   resolveObstacleCollisions,
   resolveOutcome,
+  stepDewQuest,
+  stepPatternDurability,
   stepWaspAI,
+  stepWebDewRegeneration,
 } from './rules';
 import {
   DEFAULT_BINDINGS,
+  DEFAULT_SETTINGS,
   formatInputCode,
   matchesBinding,
   rebindActionSlot,
@@ -325,5 +342,347 @@ test('soundtrack carousel covers all 7 requested tracks with evocative titles an
   assert.equal(getNextCarouselIndex(2), 3);
   assert.equal(getPrevCarouselIndex(2), 1);
 });
+
+test('computeSilkBridgeHeight supports walking along elevated spun silk strands', () => {
+  const anchors = new Map([
+    ['a', { x: 0, y: 1.5, z: 0 }],
+    ['b', { x: 4, y: 2.5, z: 0 }],
+  ]);
+  const strands: SilkStrand[] = [
+    {
+      id: 's1',
+      fromId: 'a',
+      toId: 'b',
+      durability: 100,
+      maxDurability: 100,
+      createdAt: 0,
+    },
+  ];
+
+  // Midpoint along strand while airborne/high engages tightrope at y ~ 2.03
+  const midHit = computeSilkBridgeHeight(2.0, 0.15, 1.8, strands, anchors);
+  assert.equal(midHit.strandId, 's1');
+  assert.ok(midHit.height !== null && Math.abs(midHit.height - 2.03) < 0.02);
+
+  // Far below ground ignores high overhead strands
+  const underneath = computeSilkBridgeHeight(2.0, 0.0, 0.2, strands, anchors);
+  assert.equal(underneath.height, null);
+  assert.equal(underneath.strandId, null);
+
+  // Too far sideways misses the strand corridor
+  const offSide = computeSilkBridgeHeight(2.0, 1.1, 2.2, strands, anchors);
+  assert.equal(offSide.height, null);
+});
+
+test('aerial catch bonus, species-pattern lure affinity, and gust durability decay behave accurately', () => {
+  assert.deepEqual(computeAerialCatchReward(20, false), {
+    totalReward: 20,
+    aerialBonus: 0,
+  });
+  assert.deepEqual(computeAerialCatchReward(20, true), {
+    totalReward: 26,
+    aerialBonus: 6,
+  });
+
+  assert.ok(computePatternSpeciesAffinity('triangle', 'fatbelly') > 1.3);
+  assert.ok(computePatternSpeciesAffinity('star', 'nimble') > 1.3);
+  assert.ok(computePatternSpeciesAffinity('circle', 'greenie') > 1.3);
+  assert.ok(computePatternSpeciesAffinity('circle', 'fatbelly') < 1.0);
+  assert.equal(computePatternSpeciesAffinity('decoy', 'greenie'), 0);
+
+  const circleWeb = createPatternRecord({
+    id: 'p_circle',
+    shape: 'circle',
+    nodeIds: ['a', 'b', 'c', 'd'],
+    positions: [
+      { x: 0, y: 1, z: 0 },
+      { x: 2, y: 1, z: 0 },
+      { x: 2, y: 1, z: 2 },
+      { x: 0, y: 1, z: 2 },
+    ],
+    createdAt: 0,
+  });
+  const triWeb = createPatternRecord({
+    id: 'p_tri',
+    shape: 'triangle',
+    nodeIds: ['a', 'b', 'c'],
+    positions: [
+      { x: 0, y: 1, z: 0 },
+      { x: 2, y: 1, z: 0 },
+      { x: 1, y: 1, z: 2 },
+    ],
+    createdAt: 0,
+  });
+
+  stepPatternDurability([circleWeb, triWeb], 4, true);
+  assert.ok(circleWeb.durability < triWeb.durability);
+  assert.ok(triWeb.durability > 95);
+});
+
+test('wasp dive hits at most once, is dodgeable by sidestepping or dashing, and stillness shrinks detection', () => {
+  // Standing still at 5.5m avoids normal patrol detection (7.2 * 0.58 = 4.17m)
+  const stillFar = stepWaspAI({
+    state: 'patrol',
+    stateTimer: 1.0,
+    dt: 0.1,
+    spiderPos: { x: 0, y: 0, z: 0 },
+    waspPos: { x: 5.5, y: 0, z: 0 },
+    isHiddenInNettle: false,
+    isMoving: false,
+    leafRippleRisk: 0.05,
+    nearestDecoyPos: null,
+    chapter: 'ch2_wasp',
+    detectionScale: 1.0,
+  });
+  assert.equal(stillFar.nextState, 'patrol');
+
+  // Post-dive cooldown prevents immediate re-investigation even when exposed
+  const cooldownPatrol = stepWaspAI({
+    state: 'patrol',
+    stateTimer: 1.0,
+    dt: 0.1,
+    spiderPos: { x: 0, y: 0, z: 0 },
+    waspPos: { x: 3.0, y: 0, z: 0 },
+    isHiddenInNettle: false,
+    isMoving: true,
+    postDiveCooldown: 2.5,
+    leafRippleRisk: 0.5,
+    nearestDecoyPos: null,
+    chapter: 'ch2_wasp',
+  });
+  assert.equal(cooldownPatrol.nextState, 'patrol');
+
+  // Dive before 0.58s windup does not deal damage; at 0.7s without dodge/commit it hits once; with commit it never hits again
+  const windup = stepWaspAI({
+    state: 'dive',
+    stateTimer: 0.3,
+    dt: 0.1,
+    spiderPos: { x: 0, y: 0, z: 0 },
+    waspPos: { x: 0, y: 1.2, z: 0 },
+    isHiddenInNettle: false,
+    diveTargetPos: { x: 0, y: 0, z: 0 },
+    leafRippleRisk: 0.5,
+    nearestDecoyPos: null,
+    chapter: 'ch2_wasp',
+  });
+  assert.equal(windup.triggeredDiveHit, false);
+
+  const secondFrameAlreadyHit = stepWaspAI({
+    state: 'dive',
+    stateTimer: 0.7,
+    dt: 0.05,
+    spiderPos: { x: 0, y: 0, z: 0 },
+    waspPos: { x: 0, y: 0.6, z: 0 },
+    isHiddenInNettle: false,
+    diveHitCommitted: true,
+    diveTargetPos: { x: 0, y: 0, z: 0 },
+    leafRippleRisk: 0.5,
+    nearestDecoyPos: null,
+    chapter: 'ch2_wasp',
+  });
+  assert.equal(secondFrameAlreadyHit.triggeredDiveHit, false);
+
+  // Dashing away from diveTargetPos avoids the hit and rewards dodgedDive on finish
+  const dodgedEnd = stepWaspAI({
+    state: 'dive',
+    stateTimer: 1.15,
+    dt: 0.1,
+    spiderPos: { x: 3.2, y: 0, z: 0 },
+    waspPos: { x: 0, y: 0.7, z: 0 },
+    isHiddenInNettle: false,
+    diveHitCommitted: false,
+    isDodging: true,
+    diveTargetPos: { x: 0, y: 0, z: 0 },
+    leafRippleRisk: 0.3,
+    nearestDecoyPos: null,
+    chapter: 'ch2_wasp',
+  });
+  assert.equal(dodgedEnd.triggeredDiveHit, false);
+  assert.equal(dodgedEnd.dodgedDive, true);
+  assert.equal(dodgedEnd.nextState, 'patrol');
+
+  // Relative bearing checks
+  assert.equal(computeWaspRelativeBearingDeg({ x: 0, y: 0, z: 0 }, 0, { x: 0, y: 2, z: -6 }), 0);
+  assert.equal(computeWaspRelativeBearingDeg({ x: 0, y: 0, z: 0 }, 0, { x: 6, y: 2, z: 0 }), 90);
+  assert.equal(computeWaspRelativeBearingDeg({ x: 0, y: 0, z: 0 }, 0, { x: -6, y: 2, z: 0 }), -90);
+});
+
+test('Three Drops of Moon Dew quest, Lore progression, windDecayScale, and wasp web-snare work accurately', () => {
+  // Mismatched shape does not progress quest
+  const mismatch = stepDewQuest(INITIAL_DEW_QUEST, 'fatbelly', 'circle');
+  assert.equal(mismatch.progressed, false);
+  assert.equal(mismatch.justCompleted, false);
+
+  const s1 = stepDewQuest(INITIAL_DEW_QUEST, 'fatbelly', 'triangle');
+  assert.equal(s1.progressed, true);
+  assert.equal(s1.next.fatbellyTriangle, true);
+  assert.equal(s1.justCompleted, false);
+
+  const s2 = stepDewQuest(s1.next, 'nimble', 'star');
+  assert.equal(s2.progressed, true);
+  assert.equal(s2.next.nimbleStar, true);
+  assert.equal(s2.justCompleted, false);
+
+  const s3 = stepDewQuest(s2.next, 'greenie', 'circle');
+  assert.equal(s3.progressed, true);
+  assert.equal(s3.justCompleted, true);
+  assert.equal(s3.next.completed, true);
+
+  // Lore progression
+  const lorePrologue = computeUnlockedLoreIds({
+    chapter: 'prologue',
+    greatStrandsDone: 0,
+    dewQuestCompleted: false,
+    caughtSpecies: { fatbelly: 0, nimble: 0, greenie: 0, tearbearer: 0 },
+  });
+  assert.deepEqual(lorePrologue, ['shadow_stitch']);
+
+  const loreVictory = computeUnlockedLoreIds({
+    chapter: 'victory',
+    greatStrandsDone: 6,
+    dewQuestCompleted: true,
+    caughtSpecies: { fatbelly: 2, nimble: 1, greenie: 1, tearbearer: 1 },
+  });
+  assert.equal(loreVictory.length, 6);
+  assert.ok(loreVictory.includes('dew_temper'));
+  assert.ok(loreVictory.includes('first_pattern'));
+
+  // Dew-tempered windDecayScale slows web decay
+  const webA = createPatternRecord({
+    id: 'w_a',
+    shape: 'circle',
+    nodeIds: ['a', 'b', 'c', 'd'],
+    positions: [
+      { x: 0, y: 1, z: 0 },
+      { x: 2, y: 1, z: 0 },
+      { x: 2, y: 1, z: 2 },
+      { x: 0, y: 1, z: 2 },
+    ],
+    createdAt: 0,
+  });
+  const webB = { ...webA, id: 'w_b', durability: 100 };
+  stepPatternDurability([webA], 5, true, 1.0);
+  stepPatternDurability([webB], 5, true, 0.65);
+  assert.ok(webB.durability > webA.durability);
+
+  // Wasp low near circle web gets snared; decoy or high flight does not snare
+  assert.equal(isWaspSnaredInWeb({ x: 1, y: 1.5, z: 1 }, [webA]), true);
+  assert.equal(isWaspSnaredInWeb({ x: 1, y: 4.5, z: 1 }, [webA]), false);
+});
+
+test('setae hair vibration scales smoothly with combat/fear/leap and idle front-leg tap oscillates selectively', () => {
+  const calmAmp = computeSetaeVibrationAmp({
+    breathPulse: 0,
+    combatBlend: 0,
+    fearIntensity: 0,
+    windStrength: 0.12,
+    isGrounded: true,
+  });
+  const tenseAmp = computeSetaeVibrationAmp({
+    breathPulse: 1,
+    combatBlend: 1,
+    fearIntensity: 0.85,
+    windStrength: 0.5,
+    isGrounded: false,
+  });
+  assert.ok(calmAmp > 0.003 && calmAmp < 0.008);
+  assert.ok(tenseAmp > calmAmp * 1.8 && tenseAmp <= 0.018);
+
+  // Idle front-leg tap is zero when walking or on hind legs, and pulses [0..1] when standing
+  assert.equal(computeIdleTapPulse(0.4, 0, 1, false), 0);
+  assert.equal(computeIdleTapPulse(0.4, 3, 1, true), 0);
+  let maxRightTap = 0;
+  for (let t = 0; t < 3; t += 0.05) {
+    const p = computeIdleTapPulse(t, 0, 1, true);
+    assert.ok(p >= 0 && p <= 1);
+    if (p > maxRightTap) maxRightTap = p;
+  }
+  assert.ok(maxRightTap > 0.85);
+});
+
+test('Spider-Web Radar coordinates project camera-relativity and clamp outer perimeter blips', () => {
+  const player = { x: 0, y: 0, z: 0 };
+  const ahead = projectToRadarCoords(player, 0, { x: 0, y: 0, z: -11 }, 22);
+  assert.equal(ahead.x, 0);
+  assert.equal(ahead.z, -0.5);
+  assert.equal(ahead.clamped, false);
+
+  const right = projectToRadarCoords(player, 0, { x: 11, y: 0, z: 0 }, 22);
+  assert.equal(right.x, 0.5);
+  assert.equal(right.z, 0);
+
+  const far = projectToRadarCoords(player, 0, { x: 60, y: 0, z: -60 }, 22);
+  assert.equal(far.clamped, true);
+  assert.ok(Math.abs(Math.hypot(far.x, far.z) - 1) < 0.02);
+});
+
+test('Silk thread gauge relaxes sag as silk drains and accessibility defaults are clean', () => {
+  const full = computeSilkThreadGauge(160, 160);
+  const low = computeSilkThreadGauge(20, 160);
+  assert.equal(full.ratio, 1);
+  assert.ok(low.sagPx > full.sagPx);
+  assert.ok(full.spoolTurnsDeg > low.spoolTurnsDeg);
+
+  assert.equal(DEFAULT_SETTINGS.uiScale, 1);
+  assert.equal(DEFAULT_SETTINGS.colorblindMode, false);
+  assert.equal(DEFAULT_SETTINGS.reducedEffects, false);
+});
+
+test('all 6 graphics presets exist with localized labels and moon-dew regeneration works in calm weather', () => {
+  assert.equal(GRAPHICS_QUALITY_ORDER.length, 6);
+  assert.equal(GRAPHICS_QUALITY_ORDER[0], 'lowest');
+  assert.equal(GRAPHICS_QUALITY_ORDER[5], 'cinematic');
+
+  for (const lang of ['en', 'ru'] as const) {
+    const bundle = getTranslations(lang);
+    for (const tier of GRAPHICS_QUALITY_ORDER) {
+      assert.ok(bundle.graphics[tier].name.length > 0);
+      assert.ok(bundle.graphics[tier].desc.length > 0);
+    }
+  }
+
+  const wornWeb = createPatternRecord({
+    id: 'dew_web',
+    shape: 'triangle',
+    nodeIds: ['a', 'b', 'c'],
+    positions: [
+      { x: 0, y: 1, z: 0 },
+      { x: 2, y: 1, z: 0 },
+      { x: 1, y: 1, z: 2 },
+    ],
+    createdAt: 0,
+  });
+  wornWeb.durability = 72;
+
+  const gustyResult = stepWebDewRegeneration({
+    patterns: [wornWeb],
+    dt: 5,
+    isCalm: false,
+    dewTempered: true,
+    accumulator: 0,
+    silk: 40,
+    maxSilk: 160,
+  });
+  assert.equal(gustyResult.silkGained, 0);
+  assert.equal(wornWeb.durability, 72);
+
+  const calmResult = stepWebDewRegeneration({
+    patterns: [wornWeb],
+    dt: 10,
+    isCalm: true,
+    dewTempered: true,
+    accumulator: 0,
+    silk: 40,
+    maxSilk: 160,
+  });
+  assert.ok(wornWeb.durability > 90);
+  assert.ok(calmResult.silkGained >= 1);
+  assert.equal(calmResult.repairedCount, 1);
+});
+
+
+
+
+
 
 

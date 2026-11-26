@@ -10,6 +10,7 @@ import {
   formatInputCode,
   mouseButtonToCode,
   rebindActionSlot,
+  VALID_UI_SCALES,
 } from '../game/settings';
 import { getTrackDisplay, SOUNDTRACK_TRACKS } from '../game/soundtrack';
 import type {
@@ -19,8 +20,19 @@ import type {
   LanguageCode,
   UserSettings,
 } from '../game/types';
+import {
+  playUiGramophoneClick,
+  playUiLeafHover,
+  playUiSilkClick,
+} from '../game/uiAudio';
 
-type SettingsTab = 'language' | 'music' | 'controls' | 'difficulty' | 'graphics';
+type SettingsTab =
+  | 'language'
+  | 'music'
+  | 'controls'
+  | 'difficulty'
+  | 'graphics'
+  | 'accessibility';
 
 interface SettingsModalProps {
   open: boolean;
@@ -41,6 +53,7 @@ interface SettingsModalProps {
 
 const ACTION_ORDER: InputAction[] = [
   'jump',
+  'dash',
   'interact',
   'harvest',
   'grapple',
@@ -54,7 +67,14 @@ const ACTION_ORDER: InputAction[] = [
 ];
 
 const DIFFICULTIES: DifficultyLevel[] = ['story', 'normal', 'hard', 'eclipse'];
-const GRAPHICS_TIERS: GraphicsQuality[] = ['low', 'medium', 'high', 'ultra'];
+const GRAPHICS_TIERS: GraphicsQuality[] = [
+  'lowest',
+  'low',
+  'medium',
+  'high',
+  'ultra',
+  'cinematic',
+];
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   open,
@@ -138,22 +158,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   if (!open) return null;
 
   const setLanguage = (language: LanguageCode) => {
+    playUiSilkClick();
     onChange({ ...settings, language });
   };
 
   const setDifficulty = (difficulty: DifficultyLevel) => {
+    playUiSilkClick();
     onChange({ ...settings, difficulty });
   };
 
   const setGraphics = (graphics: GraphicsQuality) => {
+    playUiSilkClick();
     onChange({ ...settings, graphics });
   };
 
   const setTouchMode = (touchControlsMode: UserSettings['touchControlsMode']) => {
+    playUiSilkClick();
     onChange({ ...settings, touchControlsMode });
   };
 
   const handleResetBindings = () => {
+    playUiSilkClick();
     setCapturing(null);
     onChange({
       ...settings,
@@ -164,8 +189,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   return (
     <div
       dir={rtl ? 'rtl' : 'ltr'}
-      className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-6"
-      style={{ backgroundColor: 'rgba(4, 7, 13, 0.84)' }}
+      className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-6"
+      style={{ backgroundColor: 'rgba(8, 7, 20, 0.78)' }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="settings-modal-title"
@@ -174,30 +199,38 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }}
     >
       <div
-        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded border border-[#9ec5ff]/30 bg-[#0b1220] shadow-[0_24px_64px_rgba(0,0,0,0.9)]"
+        className="dew-reveal flex max-h-[86%] w-full max-w-2xl flex-col overflow-hidden rounded-[20px_8px_22px_10px] border border-[#89ceff]/30 bg-[#0e0c21]/95 shadow-[0_24px_64px_rgba(6,5,16,0.92)]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-[#9ec5ff]/15 px-5 py-4 sm:px-6">
+        <div className="flex items-center justify-between border-b border-[#89ceff]/16 px-5 py-4 sm:px-6">
           <h2
             id="settings-modal-title"
-            className="font-display text-2xl font-semibold text-[#f0f6ff]"
+            className="font-display text-2xl font-semibold text-[#eef4ff]"
           >
             {t.settingsTitle}
           </h2>
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={onToggleFullscreen}
-              className="cursor-pointer rounded border border-[#9ec5ff]/30 bg-[#121e33] px-3 py-1.5 text-xs font-medium text-[#cfe2ff] transition-colors hover:border-[#9ec5ff]/65 hover:text-white"
+              onMouseEnter={() => playUiLeafHover()}
+              onClick={() => {
+                playUiSilkClick();
+                onToggleFullscreen();
+              }}
+              className="btn-jelly rounded-full border border-[#89ceff]/30 bg-[#171535] px-3.5 py-1.5 text-xs font-medium text-[#dce6f5] hover:border-[#89ceff]/65 hover:text-[#eef4ff]"
             >
               {isFullscreen ? t.fullscreenExit : t.fullscreenEnter}
             </button>
             <button
               type="button"
-              onClick={onClose}
+              onMouseEnter={() => playUiLeafHover()}
+              onClick={() => {
+                playUiSilkClick();
+                onClose();
+              }}
               aria-label={t.closeBtn}
-              className="cursor-pointer rounded border border-[#9ec5ff]/25 bg-[#121e33] px-3 py-1.5 text-xs font-medium text-[#cfe2ff] transition-colors hover:border-[#9ec5ff]/60 hover:text-white"
+              className="btn-jelly rounded-full border border-[#89ceff]/25 bg-[#171535] px-3.5 py-1.5 text-xs font-medium text-[#dce6f5] hover:border-[#89ceff]/60 hover:text-[#eef4ff]"
             >
               {t.closeBtn}
             </button>
@@ -205,7 +238,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex flex-wrap gap-1 border-b border-[#9ec5ff]/15 bg-[#080e1a] px-4 py-2 sm:px-6">
+        <div className="flex flex-wrap gap-1.5 border-b border-[#89ceff]/16 bg-[#0a0918]/85 px-4 py-2.5 sm:px-6">
           {(
             [
               ['language', t.tabLanguage],
@@ -213,6 +246,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               ['controls', t.tabControls],
               ['difficulty', t.tabDifficulty],
               ['graphics', t.tabGraphics],
+              ['accessibility', t.tabAccessibility],
             ] as [SettingsTab, string][]
           ).map(([id, label]) => {
             const active = tab === id;
@@ -221,14 +255,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 key={id}
                 type="button"
                 data-testid={`settings-tab-${id}`}
+                onMouseEnter={() => playUiLeafHover()}
                 onClick={() => {
+                  playUiSilkClick();
                   setCapturing(null);
                   setTab(id);
                 }}
-                className={`cursor-pointer rounded px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                className={`btn-jelly rounded-full px-3.5 py-1.5 text-xs font-semibold whitespace-nowrap border ${
                   active
-                    ? 'bg-[#22395e] text-white border border-[#9ec5ff]/55'
-                    : 'text-[#8ea6c9] border border-transparent hover:text-white hover:bg-[#111b2e]'
+                    ? 'border-[#89ceff]/65 bg-[#1f294d] text-[#eef4ff]'
+                    : 'border-transparent text-[#98add0] hover:bg-[#161432] hover:text-[#eef4ff]'
                 }`}
               >
                 {label}
@@ -248,17 +284,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     key={opt.code}
                     type="button"
                     data-lang={opt.code}
+                    onMouseEnter={() => playUiLeafHover()}
                     onClick={() => setLanguage(opt.code)}
-                    className={`cursor-pointer flex flex-col items-start rounded border px-3 py-2.5 text-left transition-colors ${
+                    className={`btn-jelly flex flex-col items-start rounded-xl border px-3 py-2.5 text-left ${
                       active
-                        ? 'border-[#9ec5ff] bg-[#1b2e4d] text-white'
-                        : 'border-[#9ec5ff]/18 bg-[#0f1829] text-[#b9cbe4] hover:border-[#9ec5ff]/45 hover:text-white'
+                        ? 'border-[#89ceff] bg-[#1b2747] text-[#eef4ff]'
+                        : 'border-[#89ceff]/18 bg-[#12102a] text-[#b9cbe4] hover:border-[#89ceff]/48 hover:text-[#eef4ff]'
                     }`}
                   >
                     <span className="text-sm font-semibold leading-tight">
                       {opt.nativeName}
                     </span>
-                    <span className="mt-0.5 text-[11px] text-[#7f98ba]">
+                    <span className="mt-0.5 text-[11px] text-[#839abd]">
                       {opt.englishName}
                     </span>
                   </button>
@@ -269,9 +306,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {tab === 'music' && (
             <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#9ec5ff]/25 bg-[#0f1829] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#89ceff]/25 bg-[#12102a] p-4">
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] tracking-[0.12em] text-[#8db5e6] uppercase">
+                  <div className="text-[11px] tracking-[0.12em] text-[#89ceff] uppercase">
                     {t.musicCarouselBadge} · {musicAvailableCount}/{SOUNDTRACK_TRACKS.length}
                   </div>
                   <p className="mt-1 text-xs leading-relaxed text-[#9cb2cf]">
@@ -282,35 +319,44 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <button
                     type="button"
                     aria-label={t.musicPrevBtn}
-                    onClick={onPrevTrack}
-                    className="cursor-pointer rounded border border-[#9ec5ff]/25 bg-[#121e33] px-3 py-1.5 text-xs font-medium text-[#cfe2ff] hover:border-[#9ec5ff]/60 hover:text-white"
+                    onClick={() => {
+                      playUiGramophoneClick();
+                      onPrevTrack();
+                    }}
+                    className="btn-jelly rounded-full border border-[#89ceff]/28 bg-[#171535] px-3 py-1.5 text-xs font-medium text-[#dce6f5] hover:border-[#89ceff]/60"
                   >
                     ⏮
                   </button>
                   <button
                     type="button"
-                    onClick={onToggleMusic}
-                    className="cursor-pointer rounded border border-[#9ec5ff]/45 bg-[#203557] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#2a4570]"
+                    onClick={() => {
+                      playUiGramophoneClick();
+                      onToggleMusic();
+                    }}
+                    className="btn-jelly rounded-full border border-[#e8b85b]/50 bg-[#1e2448] px-3.5 py-1.5 text-xs font-semibold text-[#eef4ff]"
                   >
                     {musicPaused ? `▶ ${t.musicPlayBtn}` : `⏸ ${t.musicPauseBtn}`}
                   </button>
                   <button
                     type="button"
                     aria-label={t.musicNextBtn}
-                    onClick={onNextTrack}
-                    className="cursor-pointer rounded border border-[#9ec5ff]/25 bg-[#121e33] px-3 py-1.5 text-xs font-medium text-[#cfe2ff] hover:border-[#9ec5ff]/60 hover:text-white"
+                    onClick={() => {
+                      playUiGramophoneClick();
+                      onNextTrack();
+                    }}
+                    className="btn-jelly rounded-full border border-[#89ceff]/28 bg-[#171535] px-3 py-1.5 text-xs font-medium text-[#dce6f5] hover:border-[#89ceff]/60"
                   >
                     ⏭
                   </button>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2.5 rounded border border-[#9ec5ff]/20 bg-[#0d1626]/90 px-3.5 py-2.5 text-xs text-[#abc2df]">
+              <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-[#89ceff]/20 bg-[#110f26]/90 px-3.5 py-2.5 text-xs text-[#abc2df]">
                 <span className="min-w-0 flex-1 leading-relaxed">
                   {t.musicPendingFiles}
                 </span>
                 {onImportMusicFiles && (
-                  <label className="cursor-pointer shrink-0 rounded border border-[#9ec5ff]/35 bg-[#162742] px-3 py-1.5 text-[11px] font-medium text-[#dcebff] transition-colors hover:border-[#9ec5ff]/70 hover:text-white">
+                  <label className="btn-jelly cursor-pointer shrink-0 rounded-full border border-[#89ceff]/35 bg-[#1b2647] px-3.5 py-1.5 text-[11px] font-medium text-[#dcebff] hover:border-[#89ceff]/70">
                     {t.musicImportBtn}
                     <input
                       type="file"
@@ -329,7 +375,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 )}
               </div>
 
-              <div className="divide-y divide-[#9ec5ff]/10 rounded border border-[#9ec5ff]/18 bg-[#0f1829]">
+              <div className="divide-y divide-[#89ceff]/12 rounded-xl border border-[#89ceff]/18 bg-[#12102a] overflow-hidden">
                 {SOUNDTRACK_TRACKS.map((track, idx) => {
                   const active = idx === musicTrackIndex;
                   const display = getTrackDisplay(track, settings.language);
@@ -338,15 +384,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       key={track.id}
                       type="button"
                       data-track-id={track.id}
-                      onClick={() => onSelectTrack(idx)}
+                      onClick={() => {
+                        playUiGramophoneClick();
+                        onSelectTrack(idx);
+                      }}
                       className={`flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left transition-colors ${
                         active
-                          ? 'bg-[#1b2e4d] text-white'
-                          : 'text-[#c2d4ea] hover:bg-[#142036] hover:text-white'
+                          ? 'bg-[#1d284b] text-[#eef4ff]'
+                          : 'text-[#c2d4ea] hover:bg-[#171535] hover:text-[#eef4ff]'
                       }`}
                     >
                       <div className="flex min-w-0 items-center gap-3">
-                        <span className="font-mono-num text-xs text-[#7ea7e0]">
+                        <span className="font-mono-num text-xs text-[#89ceff]">
                           {String(idx + 1).padStart(2, '0')}
                         </span>
                         <div className="min-w-0">
@@ -365,8 +414,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         className={`shrink-0 text-[11px] font-medium ${
                           active
                             ? musicPaused
-                              ? 'text-[#f2c97d]'
-                              : 'text-[#9effdb]'
+                              ? 'text-[#e8b85b]'
+                              : 'text-[#6cc997]'
                             : 'text-[#6c83a6]'
                         }`}
                       >
@@ -385,8 +434,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {tab === 'controls' && (
             <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#9ec5ff]/18 bg-[#0f1829] px-3.5 py-2.5">
-                <span className="text-xs font-medium text-[#cfe0f5]">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#89ceff]/18 bg-[#12102a] px-3.5 py-2.5">
+                <span className="text-xs font-medium text-[#dce6f5]">
                   {t.touchControlsLabel}
                 </span>
                 <div className="flex items-center gap-1.5">
@@ -401,10 +450,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       key={mode}
                       type="button"
                       onClick={() => setTouchMode(mode)}
-                      className={`cursor-pointer rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                      className={`btn-jelly rounded-full px-3 py-1 text-xs font-medium border ${
                         settings.touchControlsMode === mode
-                          ? 'bg-[#253e66] text-white border border-[#9ec5ff]/55'
-                          : 'bg-[#090f1a] text-[#8fa7c9] border border-[#9ec5ff]/15 hover:text-white'
+                          ? 'bg-[#1f2c52] text-[#eef4ff] border-[#89ceff]/60'
+                          : 'bg-[#0b0a1b] text-[#8fa7c9] border-[#89ceff]/15 hover:text-[#eef4ff]'
                       }`}
                     >
                       {label}
@@ -418,19 +467,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <button
                   type="button"
                   onClick={handleResetBindings}
-                  className="cursor-pointer shrink-0 rounded border border-[#9ec5ff]/25 bg-[#121e33] px-2.5 py-1 text-xs text-[#cfe2ff] hover:border-[#9ec5ff]/60 hover:text-white"
+                  className="btn-jelly shrink-0 rounded-full border border-[#89ceff]/25 bg-[#171535] px-3 py-1 text-xs text-[#dce6f5] hover:border-[#89ceff]/60"
                 >
                   {t.resetDefaultsBtn}
                 </button>
               </div>
 
               {capturing && (
-                <div className="rounded border border-[#9effdb]/60 bg-[#0e2420] px-4 py-2.5 text-center text-xs font-medium text-[#9effdb]">
+                <div className="rounded-xl border border-[#6cc997]/60 bg-[#0e2221] px-4 py-2.5 text-center text-xs font-medium text-[#6cc997]">
                   {t.pressKeyPrompt}
                 </div>
               )}
 
-              <div className="divide-y divide-[#9ec5ff]/10 rounded border border-[#9ec5ff]/18 bg-[#0f1829]">
+              <div className="divide-y divide-[#89ceff]/10 rounded-xl border border-[#89ceff]/18 bg-[#12102a] overflow-hidden">
                 {ACTION_ORDER.map((action) => {
                   const codes = settings.bindings[action] || [];
                   const slot0 = codes[0] || '';
@@ -453,11 +502,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               key={slotIdx}
                               type="button"
                               data-bind={`${action}-${slotIdx}`}
-                              onClick={() => setCapturing({ action, slot: slotIdx })}
-                              className={`min-w-[74px] cursor-pointer rounded border px-2.5 py-1 text-center font-mono-num text-xs transition-colors ${
+                              onClick={() => {
+                                playUiSilkClick();
+                                setCapturing({ action, slot: slotIdx });
+                              }}
+                              className={`min-w-[74px] cursor-pointer rounded-lg border px-2.5 py-1 text-center font-mono-num text-xs transition-colors ${
                                 isCap
-                                  ? 'border-[#9effdb] bg-[#163830] text-[#9effdb]'
-                                  : 'border-[#9ec5ff]/25 bg-[#080e1a] text-[#d5e5fa] hover:border-[#9ec5ff]/65'
+                                  ? 'border-[#6cc997] bg-[#132f2a] text-[#6cc997]'
+                                  : 'border-[#89ceff]/25 bg-[#0b0a1b] text-[#dce6f5] hover:border-[#89ceff]/65'
                               }`}
                             >
                               {isCap ? '...' : formatInputCode(code)}
@@ -482,14 +534,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     key={diff}
                     type="button"
                     data-difficulty={diff}
+                    onMouseEnter={() => playUiLeafHover()}
                     onClick={() => setDifficulty(diff)}
-                    className={`cursor-pointer flex flex-col items-start rounded border p-4 text-left transition-colors ${
+                    className={`btn-jelly flex flex-col items-start rounded-xl border p-4 text-left ${
                       active
-                        ? 'border-[#9ec5ff] bg-[#1b2e4d] text-white'
-                        : 'border-[#9ec5ff]/18 bg-[#0f1829] text-[#c2d2e8] hover:border-[#9ec5ff]/45'
+                        ? 'border-[#89ceff] bg-[#1c274a] text-[#eef4ff]'
+                        : 'border-[#89ceff]/18 bg-[#12102a] text-[#c2d2e8] hover:border-[#89ceff]/48'
                     }`}
                   >
-                    <div className="text-base font-semibold text-[#eef5ff]">
+                    <div className="text-base font-semibold text-[#eef4ff]">
                       {info.name}
                     </div>
                     <p className="mt-1 text-xs leading-relaxed text-[#9cb2cf]">
@@ -511,14 +564,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     key={tier}
                     type="button"
                     data-graphics={tier}
+                    onMouseEnter={() => playUiLeafHover()}
                     onClick={() => setGraphics(tier)}
-                    className={`cursor-pointer flex flex-col items-start rounded border p-4 text-left transition-colors ${
+                    className={`btn-jelly flex flex-col items-start rounded-xl border p-4 text-left ${
                       active
-                        ? 'border-[#9ec5ff] bg-[#1b2e4d] text-white'
-                        : 'border-[#9ec5ff]/18 bg-[#0f1829] text-[#c2d2e8] hover:border-[#9ec5ff]/45'
+                        ? 'border-[#89ceff] bg-[#1c274a] text-[#eef4ff]'
+                        : 'border-[#89ceff]/18 bg-[#12102a] text-[#c2d2e8] hover:border-[#89ceff]/48'
                     }`}
                   >
-                    <div className="text-base font-semibold text-[#eef5ff]">
+                    <div className="text-base font-semibold text-[#eef4ff]">
                       {info.name}
                     </div>
                     <p className="mt-1 text-xs leading-relaxed text-[#9cb2cf]">
@@ -527,6 +581,107 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {tab === 'accessibility' && (
+            <div className="space-y-4">
+              {/* UI Scale Selector */}
+              <div className="rounded-xl border border-[#89ceff]/22 bg-[#12102a] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-[#eef4ff]">
+                    {t.uiScaleLabel}
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {VALID_UI_SCALES.map((scaleVal) => {
+                      const active = settings.uiScale === scaleVal;
+                      return (
+                        <button
+                          key={scaleVal}
+                          type="button"
+                          data-testid={`ui-scale-${scaleVal}`}
+                          onMouseEnter={() => playUiLeafHover()}
+                          onClick={() => {
+                            playUiSilkClick();
+                            onChange({ ...settings, uiScale: scaleVal });
+                          }}
+                          className={`btn-jelly rounded-full px-3 py-1 font-mono-num text-xs font-semibold border ${
+                            active
+                              ? 'border-[#89ceff] bg-[#1f2d54] text-[#eef4ff]'
+                              : 'border-[#89ceff]/20 bg-[#0b0a1b] text-[#9eb5d4] hover:border-[#89ceff]/55'
+                          }`}
+                        >
+                          {Math.round(scaleVal * 100)}%
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Colorblind Pattern Symbols Toggle */}
+              <button
+                type="button"
+                data-testid="toggle-colorblind"
+                onMouseEnter={() => playUiLeafHover()}
+                onClick={() => {
+                  playUiSilkClick();
+                  onChange({ ...settings, colorblindMode: !settings.colorblindMode });
+                }}
+                className={`btn-jelly flex w-full items-center justify-between gap-4 rounded-xl border p-4 text-left ${
+                  settings.colorblindMode
+                    ? 'border-[#6cc997]/65 bg-[#122629]'
+                    : 'border-[#89ceff]/20 bg-[#12102a] hover:border-[#89ceff]/48'
+                }`}
+              >
+                <div>
+                  <div className="text-sm font-semibold text-[#eef4ff]">
+                    {t.colorblindLabel}
+                  </div>
+                  <p className="mt-0.5 text-xs text-[#9cb2cf]">{t.colorblindDesc}</p>
+                </div>
+                <span
+                  className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold border ${
+                    settings.colorblindMode
+                      ? 'border-[#6cc997]/65 bg-[#183836] text-[#6cc997]'
+                      : 'border-[#89ceff]/20 bg-[#0b0a1b] text-[#8ea5c4]'
+                  }`}
+                >
+                  {settings.colorblindMode ? t.enabledTag : t.disabledTag}
+                </span>
+              </button>
+
+              {/* Reduced Shake & Flashes Toggle */}
+              <button
+                type="button"
+                data-testid="toggle-reduced-effects"
+                onMouseEnter={() => playUiLeafHover()}
+                onClick={() => {
+                  playUiSilkClick();
+                  onChange({ ...settings, reducedEffects: !settings.reducedEffects });
+                }}
+                className={`btn-jelly flex w-full items-center justify-between gap-4 rounded-xl border p-4 text-left ${
+                  settings.reducedEffects
+                    ? 'border-[#6cc997]/65 bg-[#122629]'
+                    : 'border-[#89ceff]/20 bg-[#12102a] hover:border-[#89ceff]/48'
+                }`}
+              >
+                <div>
+                  <div className="text-sm font-semibold text-[#eef4ff]">
+                    {t.reducedEffectsLabel}
+                  </div>
+                  <p className="mt-0.5 text-xs text-[#9cb2cf]">{t.reducedEffectsDesc}</p>
+                </div>
+                <span
+                  className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold border ${
+                    settings.reducedEffects
+                      ? 'border-[#6cc997]/65 bg-[#183836] text-[#6cc997]'
+                      : 'border-[#89ceff]/20 bg-[#0b0a1b] text-[#8ea5c4]'
+                  }`}
+                >
+                  {settings.reducedEffects ? t.enabledTag : t.disabledTag}
+                </span>
+              </button>
             </div>
           )}
         </div>

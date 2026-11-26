@@ -1,3 +1,4 @@
+import { Howl, Howler } from 'howler';
 import {
   getNextCarouselIndex,
   getPrevCarouselIndex,
@@ -5,6 +6,7 @@ import {
   SOUNDTRACK_TRACKS,
   type SoundtrackTrack,
 } from './soundtrack';
+import { setUiAudioMuted } from './uiAudio';
 import type { LocationZone } from './types';
 
 export interface MusicCarouselStatus {
@@ -86,6 +88,9 @@ export class SoundEngine {
   private flyFilter: BiquadFilterNode | null = null;
   private flyGain: GainNode | null = null;
   private grassStepBuffer: AudioBuffer | null = null;
+  private pawStepHowls: Howl[] = [];
+  private pawTapHowl: Howl | null = null;
+  private lastPawStepIdx = -1;
 
   private muted = false;
   private initialized = false;
@@ -95,6 +100,21 @@ export class SoundEngine {
     this.onMusicChange = onMusicChange;
     this.bindGestureUnlock();
     this.initMusicManifest();
+    this.initPawHowls();
+  }
+
+  private initPawHowls(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      this.pawStepHowls = [];
+      this.pawTapHowl = new Howl({
+        src: ['/sfx/paw_tap.wav'],
+        volume: 0.014,
+        preload: true,
+      });
+    } catch {
+      // Headless or audio-restricted environment
+    }
   }
 
   private onUserGestureUnlock = (): void => {
@@ -394,6 +414,8 @@ export class SoundEngine {
 
   public setMuted(mute: boolean): void {
     this.muted = mute;
+    setUiAudioMuted(mute);
+    Howler.mute(mute);
     if (this.audioEl) {
       this.audioEl.muted = mute;
     }
@@ -526,17 +548,20 @@ export class SoundEngine {
       flyOsc1.start();
       flyOsc2.start();
 
-      // Organic short noise buffer with sparse micro-crackles for grass/foliage footsteps
-      const stepLen = Math.floor(ctx.sampleRate * 0.085);
+      // Silky dry-leaf / moss micro-rustle buffer (soft smoothed brown-pink noise, zero harsh transients)
+      const stepLen = Math.floor(ctx.sampleRate * 0.14);
       const stepBuf = ctx.createBuffer(1, stepLen, ctx.sampleRate);
       const stepData = stepBuf.getChannelData(0);
+      let s0 = 0;
+      let s1 = 0;
       for (let i = 0; i < stepLen; i++) {
-        const env = Math.pow(1 - i / stepLen, 1.8);
-        const grain =
-          Math.random() > 0.86
-            ? (Math.random() * 2 - 1) * 1.45
-            : (Math.random() * 2 - 1) * 0.45;
-        stepData[i] = grain * env;
+        const u = i / stepLen;
+        // Soft convex Hann-like arch envelope so there is never an artificial click
+        const env = Math.sin(u * Math.PI) * (1 - u * 0.35);
+        const w = Math.random() * 2 - 1;
+        s0 = 0.72 * s0 + w * 0.28;
+        s1 = 0.88 * s1 + w * 0.12;
+        stepData[i] = (s0 * 0.55 + s1 * 0.45) * env * 0.7;
       }
 
       this.ctx = ctx;
@@ -671,37 +696,53 @@ export class SoundEngine {
   }
 
   public playGrassStep(hiddenInNettle: boolean, zone: LocationZone): void {
-    if (!this.ctx || !this.masterGain || !this.grassStepBuffer || this.muted) return;
+    if (this.muted || this.disposed) return;
+    if (!this.ctx || !this.masterGain || !this.grassStepBuffer) return;
+
     const t = this.ctx.currentTime;
     const src = this.ctx.createBufferSource();
     src.buffer = this.grassStepBuffer;
-    src.playbackRate.value = 0.88 + Math.random() * 0.28;
+    src.playbackRate.value = 0.82 + Math.random() * 0.34;
 
+    // Warm soft foliage/moss rustle shaping (шорох лапок по мху, траве и коре)
     const hp = this.ctx.createBiquadFilter();
     hp.type = 'highpass';
-    hp.frequency.value = zone === 'log' ? 580 : 820;
+    hp.frequency.value = zone === 'log' || zone === 'stump' ? 420 : 620;
+
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = hiddenInNettle ? 2200 : 2850;
+    lp.Q.value = 0.5;
 
     const bp = this.ctx.createBiquadFilter();
     bp.type = 'bandpass';
     bp.frequency.value = hiddenInNettle
-      ? 1450 + Math.random() * 450
-      : zone === 'log'
-        ? 1150 + Math.random() * 380
-        : 2200 + Math.random() * 750;
-    bp.Q.value = 1.75;
+      ? 1180 + Math.random() * 340
+      : zone === 'log' || zone === 'stump'
+        ? 860 + Math.random() * 280
+        : 1520 + Math.random() * 520;
+    bp.Q.value = 1.05;
 
     const gain = this.ctx.createGain();
-    const peak = hiddenInNettle ? 0.072 : 0.052;
-    gain.gain.setValueAtTime(0.001, t);
-    gain.gain.linearRampToValueAtTime(peak, t + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.065);
+    const peak = hiddenInNettle ? 0.012 : 0.0082;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(peak, t + 0.032);
+    gain.gain.exponentialRampToValueAtTime(0.0002, t + 0.125);
 
     src.connect(hp);
     hp.connect(bp);
-    bp.connect(gain);
+    bp.connect(lp);
+    lp.connect(gain);
     gain.connect(this.masterGain);
     src.start(t);
-    src.stop(t + 0.08);
+    src.stop(t + 0.135);
+  }
+
+  public playPawTap(): void {
+    if (this.muted || this.disposed || !this.initialized || !this.pawTapHowl) return;
+    const id = this.pawTapHowl.play();
+    this.pawTapHowl.volume(0.011 + Math.random() * 0.006, id);
+    this.pawTapHowl.rate(0.88 + Math.random() * 0.2, id);
   }
 
   public silenceLoops(): void {
@@ -744,6 +785,24 @@ export class SoundEngine {
     g.connect(this.masterGain);
     osc.start(t);
     osc.stop(t + 0.11);
+  }
+
+  public playSilkStep(): void {
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    const pitch = 540 + (Math.random() - 0.5) * 90;
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(pitch, t);
+    osc.frequency.exponentialRampToValueAtTime(pitch * 1.12, t + 0.06);
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.022, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0006, t + 0.12);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.13);
   }
 
   public playSilkPluck(strandLength: number): void {
@@ -804,22 +863,43 @@ export class SoundEngine {
     });
   }
 
-  public playFlyCapture(): void {
+  public playFlyCapture(isAerial = false): void {
     this.ensureStarted();
     if (!this.ctx || !this.masterGain) return;
     const t = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(523.25, t);
-    osc.frequency.exponentialRampToValueAtTime(783.99, t + 0.14);
+    osc.frequency.setValueAtTime(isAerial ? 659.25 : 523.25, t);
+    osc.frequency.exponentialRampToValueAtTime(isAerial ? 1046.5 : 783.99, t + 0.16);
     gain.gain.setValueAtTime(0.001, t);
-    gain.gain.linearRampToValueAtTime(0.2, t + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+    gain.gain.linearRampToValueAtTime(isAerial ? 0.24 : 0.2, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
     osc.connect(gain);
     gain.connect(this.masterGain);
     osc.start(t);
-    osc.stop(t + 0.3);
+    osc.stop(t + 0.32);
+  }
+
+  public playWebMend(): void {
+    this.ensureStarted();
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    [587.33, 880].forEach((freq, i) => {
+      if (!this.ctx || !this.masterGain) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      const start = t + i * 0.045;
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.001, start);
+      gain.gain.linearRampToValueAtTime(0.11, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0008, start + 0.38);
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(start);
+      osc.stop(start + 0.4);
+    });
   }
 
   public playGrappleZip(): void {
@@ -857,6 +937,43 @@ export class SoundEngine {
     osc.stop(t + 0.3);
   }
 
+  public playDash(): void {
+    this.ensureStarted();
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(310, t);
+    osc.frequency.exponentialRampToValueAtTime(640, t + 0.08);
+    osc.frequency.exponentialRampToValueAtTime(220, t + 0.19);
+    gain.gain.setValueAtTime(0.001, t);
+    gain.gain.linearRampToValueAtTime(0.14, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.21);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.22);
+  }
+
+  public playWaspDiveTelegraph(): void {
+    this.ensureStarted();
+    if (!this.ctx || !this.masterGain || this.muted) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(240, t);
+    osc.frequency.exponentialRampToValueAtTime(560, t + 0.38);
+    gain.gain.setValueAtTime(0.001, t);
+    gain.gain.linearRampToValueAtTime(0.13, t + 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.44);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.46);
+  }
+
   public playLunarTriumph(): void {
     this.ensureStarted();
     if (!this.ctx || !this.masterGain) return;
@@ -883,6 +1000,10 @@ export class SoundEngine {
     this.disposed = true;
     this.unbindGestureUnlock();
     try {
+      this.pawStepHowls.forEach((h) => h.unload());
+      this.pawStepHowls = [];
+      this.pawTapHowl?.unload();
+      this.pawTapHowl = null;
       this.customBlobUrls.forEach((u) => URL.revokeObjectURL(u));
       this.customBlobUrls.clear();
       if (this.audioEl) {

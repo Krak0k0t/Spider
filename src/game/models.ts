@@ -18,6 +18,12 @@ export interface PavutinRig {
   }[];
   shadowDisc: THREE.Mesh;
   silkGlowMat: THREE.MeshStandardMaterial;
+  setaeUniforms: {
+    uSetaeTime: { value: number };
+    uSetaeAmp: { value: number };
+  };
+  abdSetaeGroup: THREE.Group;
+  cephSetaeGroup: THREE.Group;
 }
 
 export interface WaspRig {
@@ -31,6 +37,9 @@ export interface WaspRig {
   abdomen: THREE.Group;
   legs: THREE.Group[];
   shadowDisc: THREE.Mesh;
+  wingMat: THREE.MeshPhysicalMaterial;
+  blurMat: THREE.MeshStandardMaterial;
+  shadowDiscMat: THREE.MeshStandardMaterial;
 }
 
 export interface FlyRig {
@@ -40,6 +49,7 @@ export interface FlyRig {
   blurFans: [THREE.Mesh, THREE.Mesh];
   halteres: [THREE.Mesh, THREE.Mesh];
   legsGroup: THREE.Group;
+  silkWrapMesh: THREE.Mesh;
   tearOrb?: THREE.Mesh;
   shadowDisc: THREE.Mesh;
 }
@@ -53,6 +63,7 @@ export interface ForestWorldHandle {
   fernInstances: THREE.InstancedMesh;
   grassInstances: THREE.InstancedMesh;
   distantGrassSpritesInst: THREE.InstancedMesh;
+  windStreaksInst: THREE.InstancedMesh;
   lodRocks: THREE.LOD[];
   cloverInstances: THREE.InstancedMesh;
   fallenLeafInstances: THREE.InstancedMesh;
@@ -76,7 +87,9 @@ export interface ForestWorldHandle {
   uspokh: PavutinRig;
   windTimeUniform: { value: number };
   windStrengthUniform: { value: number };
+  windEnabledUniform: { value: number };
   moonBeamsGroup: THREE.Group;
+  moonBeamMat: THREE.MeshStandardMaterial;
   sacredFrameLight: THREE.PointLight;
   greatFrameGlade: THREE.Mesh;
   moonMesh: THREE.Mesh;
@@ -89,14 +102,16 @@ function applyFoliageWindShader(
   material: THREE.Material,
   windTimeUniform: { value: number },
   windStrengthUniform: { value: number },
+  windEnabledUniform: { value: number },
   swayFactor: number,
   centeredCard = false,
 ): void {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uWindTime = windTimeUniform;
     shader.uniforms.uWindStrength = windStrengthUniform;
+    shader.uniforms.uWindEnabled = windEnabledUniform;
     shader.vertexShader =
-      `uniform float uWindTime;\nuniform float uWindStrength;\n` +
+      `uniform float uWindTime;\nuniform float uWindStrength;\nuniform float uWindEnabled;\n` +
       shader.vertexShader;
     const heightExpr = centeredCard
       ? 'clamp(length(position.xy) * 0.55, 0.12, 2.4)'
@@ -104,23 +119,55 @@ function applyFoliageWindShader(
     shader.vertexShader = shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
-      float windHeight = ${heightExpr};
-      float windPhase = uWindTime * 2.25;
-      #ifdef USE_INSTANCING
-        windPhase += instanceMatrix[3][0] * 0.62 + instanceMatrix[3][2] * 0.47;
-      #else
-        windPhase += position.x * 0.62 + position.z * 0.47;
-      #endif
-      float gustWave = sin(windPhase) * 0.64 + sin(windPhase * 2.35 + 1.15) * 0.36;
-      float flutter = sin(windPhase * 3.1 + position.x * 2.4) * 0.14;
-      float amp = windHeight * (0.26 + uWindStrength * 1.18) * ${swayFactor.toFixed(3)};
-      transformed.x += gustWave * amp;
-      transformed.y += flutter * amp;
-      transformed.z += cos(windPhase * 0.9) * amp * 0.72;`,
+      if (uWindEnabled > 0.5) {
+        float windHeight = ${heightExpr};
+        float windPhase = uWindTime * 2.25;
+        #ifdef USE_INSTANCING
+          windPhase += instanceMatrix[3][0] * 0.62 + instanceMatrix[3][2] * 0.47;
+        #else
+          windPhase += position.x * 0.62 + position.z * 0.47;
+        #endif
+        float gustWave = sin(windPhase) * 0.64 + sin(windPhase * 2.35 + 1.15) * 0.36;
+        float flutter = sin(windPhase * 3.1 + position.x * 2.4) * 0.14;
+        float amp = windHeight * (0.26 + uWindStrength * 1.18) * ${swayFactor.toFixed(3)} * uWindEnabled;
+        transformed.x += gustWave * amp;
+        transformed.y += flutter * amp;
+        transformed.z += cos(windPhase * 0.9) * amp * 0.72;
+      }`,
     );
   };
   material.customProgramCacheKey = () =>
-    `foliage_wind_${swayFactor.toFixed(2)}_${centeredCard ? 1 : 0}`;
+    `foliage_wind_v2_${swayFactor.toFixed(2)}_${centeredCard ? 1 : 0}`;
+}
+
+/**
+ * Animates sensory setae tips in vertex space via sinusoidal wave displacement
+ * while keeping hair roots (aTip = 0.0) anchored firmly to the spider carapace & legs.
+ */
+function applySetaeVibrationShader(
+  material: THREE.Material,
+  setaeTimeUniform: { value: number },
+  setaeAmpUniform: { value: number },
+  cacheTag: string,
+): void {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uSetaeTime = setaeTimeUniform;
+    shader.uniforms.uSetaeAmp = setaeAmpUniform;
+    shader.vertexShader =
+      `attribute float aTip;\nuniform float uSetaeTime;\nuniform float uSetaeAmp;\n` +
+      shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      float sPhase = uSetaeTime * 9.5 + position.x * 28.0 + position.y * 22.0 + position.z * 26.0;
+      float sBurst = 0.68 + 0.32 * sin(uSetaeTime * 3.1 + position.z * 9.0);
+      float sScale = aTip * uSetaeAmp * sBurst;
+      transformed.x += sin(sPhase) * sScale;
+      transformed.y += cos(sPhase * 1.27 + 0.8) * sScale * 0.72;
+      transformed.z += sin(sPhase * 1.43 + 1.9) * sScale;`,
+    );
+  };
+  material.customProgramCacheKey = () => `setae_vibe_${cacheTag}`;
 }
 
 /**
@@ -230,6 +277,316 @@ function createDisplacedRockGeometry(
  * - Articulated chelicerae with fangs + 2 segmented pedipalps + 3-nozzle spinnerets
  * - 8 true 4-segment articulated legs (Coxa, Femur, Patella/Tibia, Metatarsus/Tarsus + hooked claws + sensory spines)
  */
+/**
+ * Generates deterministic fine sensory setae bristles (LineSegments) and fuzzy micro-hair mist (Points)
+ * anchored in the local space of an ellipsoid/cylinder body part so they move & breathe seamlessly with the rig.
+ */
+function createEllipsoidSetae(
+  rx: number,
+  ry: number,
+  rz: number,
+  hairCount: number,
+  hairLen: number,
+  seed: number,
+  rootColorHex: number,
+  tipColorHex: number,
+  lineMat: THREE.LineBasicMaterial,
+  pointMat: THREE.PointsMaterial,
+  minNormalY = -0.35,
+  pointCount = 0,
+): { lines: THREE.LineSegments; points?: THREE.Points } {
+  const positions = new Float32Array(hairCount * 6);
+  const colors = new Float32Array(hairCount * 6);
+  const tips = new Float32Array(hairCount * 2);
+  const rootCol = new THREE.Color(rootColorHex);
+  const tipCol = new THREE.Color(tipColorHex);
+
+  let s = seed;
+  const rnd = () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+
+  let written = 0;
+  let attempts = 0;
+  while (written < hairCount && attempts < hairCount * 5) {
+    attempts++;
+    const u = rnd();
+    const v = rnd();
+    const theta = u * Math.PI * 2;
+    const phi = Math.acos(2 * v - 1);
+    const nx = Math.sin(phi) * Math.cos(theta);
+    const ny = Math.cos(phi);
+    const nz = Math.sin(phi) * Math.sin(theta);
+    if (ny < minNormalY) continue;
+
+    const px = nx * rx;
+    const py = ny * ry;
+    const pz = nz * rz;
+
+    // Slight sweep backward (-Z) and upward (+Y) like organic spider/insect setae
+    const len = hairLen * (0.68 + rnd() * 0.65);
+    const dx = nx * 0.82 + (rnd() - 0.5) * 0.25;
+    const dy = ny * 0.78 + 0.16;
+    const dz = nz * 0.72 - 0.34;
+    const invD = len / Math.max(0.001, Math.hypot(dx, dy, dz));
+
+    const off = written * 6;
+    positions[off] = px;
+    positions[off + 1] = py;
+    positions[off + 2] = pz;
+    positions[off + 3] = px + dx * invD;
+    positions[off + 4] = py + dy * invD;
+    positions[off + 5] = pz + dz * invD;
+
+    colors[off] = rootCol.r;
+    colors[off + 1] = rootCol.g;
+    colors[off + 2] = rootCol.b;
+    colors[off + 3] = tipCol.r;
+    colors[off + 4] = tipCol.g;
+    colors[off + 5] = tipCol.b;
+
+    const tOff = written * 2;
+    tips[tOff] = 0.0;
+    tips[tOff + 1] = 1.0;
+    written++;
+  }
+
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(positions.subarray(0, written * 6), 3));
+  lineGeo.setAttribute('color', new THREE.BufferAttribute(colors.subarray(0, written * 6), 3));
+  lineGeo.setAttribute('aTip', new THREE.BufferAttribute(tips.subarray(0, written * 2), 1));
+  const lines = new THREE.LineSegments(lineGeo, lineMat);
+
+  if (pointCount <= 0) {
+    return { lines };
+  }
+
+  const ptPos = new Float32Array(pointCount * 3);
+  const ptTips = new Float32Array(pointCount);
+  let pWritten = 0;
+  let pAtt = 0;
+  while (pWritten < pointCount && pAtt < pointCount * 4) {
+    pAtt++;
+    const theta = rnd() * Math.PI * 2;
+    const phi = Math.acos(2 * rnd() - 1);
+    const nx = Math.sin(phi) * Math.cos(theta);
+    const ny = Math.cos(phi);
+    const nz = Math.sin(phi) * Math.sin(theta);
+    if (ny < -0.15) continue;
+    const lift = 1.02 + rnd() * 0.04;
+    const pOff = pWritten * 3;
+    ptPos[pOff] = nx * rx * lift;
+    ptPos[pOff + 1] = ny * ry * lift;
+    ptPos[pOff + 2] = nz * rz * lift;
+    ptTips[pWritten] = 0.85;
+    pWritten++;
+  }
+  const ptGeo = new THREE.BufferGeometry();
+  ptGeo.setAttribute('position', new THREE.BufferAttribute(ptPos.subarray(0, pWritten * 3), 3));
+  ptGeo.setAttribute('aTip', new THREE.BufferAttribute(ptTips.subarray(0, pWritten), 1));
+  const points = new THREE.Points(ptGeo, pointMat);
+  return { lines, points };
+}
+
+function createLegSegmentSetaeGeo(
+  len: number,
+  radius: number,
+  side: -1 | 1,
+  count: number,
+  hairLen: number,
+  seed: number,
+): THREE.BufferGeometry {
+  const positions = new Float32Array(count * 6);
+  const colors = new Float32Array(count * 6);
+  const tips = new Float32Array(count * 2);
+  const rootCol = new THREE.Color(0x4a3d33);
+  const tipCol = new THREE.Color(0xc8deff);
+  let s = seed;
+  const rnd = () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+  for (let i = 0; i < count; i++) {
+    const t = 0.08 + rnd() * 0.84;
+    const ang = rnd() * Math.PI * 2;
+    const yPos = t * len;
+    const rAtT = radius * (1 - t * 0.25);
+    const nx = Math.cos(ang);
+    const nz = Math.sin(ang);
+    const bx = nx * rAtT;
+    const bz = nz * rAtT;
+
+    const hl = hairLen * (0.65 + rnd() * 0.7);
+    const dx = nx * 0.72 - side * 0.24;
+    const dy = 0.56 + rnd() * 0.32;
+    const dz = nz * 0.72;
+    const inv = hl / Math.max(0.001, Math.hypot(dx, dy, dz));
+
+    const off = i * 6;
+    positions[off] = bx;
+    positions[off + 1] = yPos;
+    positions[off + 2] = bz;
+    positions[off + 3] = bx + dx * inv;
+    positions[off + 4] = yPos + dy * inv;
+    positions[off + 5] = bz + dz * inv;
+
+    colors[off] = rootCol.r;
+    colors[off + 1] = rootCol.g;
+    colors[off + 2] = rootCol.b;
+    colors[off + 3] = tipCol.r;
+    colors[off + 4] = tipCol.g;
+    colors[off + 5] = tipCol.b;
+
+    const tOff = i * 2;
+    tips[tOff] = 0.0;
+    tips[tOff + 1] = 1.0;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('aTip', new THREE.BufferAttribute(tips, 1));
+  return geo;
+}
+
+/**
+ * Builds sculpted prosoma carapace geometry with sharper cervical groove dividing
+ * the raised ocular cephalic plateau from 4 pairs of radial thoracic domes,
+ * deep dorsal fovea pit, and scalloped marginal chitin rim.
+ */
+function createSculptedProsomaGeo(): THREE.BufferGeometry {
+  const geo = new THREE.SphereGeometry(0.185, 40, 28);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    let x = pos.getX(i);
+    let y = pos.getY(i);
+    let z = pos.getZ(i);
+    const nx = x / 0.185;
+    const ny = y / 0.185;
+    const nz = z / 0.185;
+
+    // Narrow anterior cephalic head + broader posterior thoracic dome
+    const widthProfile = nz > 0 ? 1.0 - nz * 0.26 : 1.0 + Math.abs(nz) * 0.14;
+    x *= widthProfile;
+
+    if (ny > 0) {
+      // Raised cephalic hump + cervical V-groove separating head from thorax
+      const headLift = Math.max(0, nz) * 0.036;
+      const cervicalDist = Math.abs(nz - 0.18 + Math.abs(nx) * 0.42);
+      const cervicalGroove = Math.exp(-cervicalDist * cervicalDist * 46.0) * 0.015;
+      // Central dorsal fovea dimple
+      const foveaDist = Math.hypot(nx * 1.18, (nz + 0.17) * 1.48);
+      const foveaDip = Math.exp(-foveaDist * foveaDist * 10.5) * 0.03;
+      // 4 pairs of radiating thoracic sulci grooves & muscular inter-sulci domes
+      const ang = Math.atan2(Math.abs(nx), nz - 0.04);
+      const sulcusWave =
+        Math.pow(Math.abs(Math.sin(ang * 4.0)), 6) *
+        Math.max(0, 0.88 - foveaDist) *
+        0.013;
+      const muscleDome =
+        Math.pow(Math.abs(Math.cos(ang * 4.0)), 3) *
+        Math.max(0, 0.72 - Math.abs(foveaDist - 0.48)) *
+        0.008;
+      y += headLift - cervicalGroove - foveaDip - sulcusWave + muscleDome;
+    } else {
+      // Flatter sternum underside
+      y *= 0.6;
+    }
+
+    // Scalloped marginal chitin rim lip above coxal sockets
+    if (Math.abs(ny) < 0.25) {
+      const scallop = 0.78 + 0.22 * Math.cos(Math.atan2(nx, nz) * 8.0);
+      const flare = (1 - Math.abs(ny) / 0.25) * 0.019 * scallop;
+      x += Math.sign(x) * flare;
+      z += Math.sign(z) * flare * 0.42;
+    }
+
+    pos.setXYZ(i, x, y, z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Builds sculpted orb-weaver teardrop opisthosoma geometry with dorsal cardiac ridge,
+ * subtle lateral pleural pleats, and 6 recessed paired dorsal sigilla apodeme dimples.
+ */
+function createSculptedAbdomenGeo(): THREE.BufferGeometry {
+  const geo = new THREE.SphereGeometry(0.255, 44, 32);
+  const pos = geo.attributes.position;
+  const sigillaCoords: [number, number][] = [
+    [-0.36, 0.34], [0.36, 0.34],
+    [-0.42, 0.02], [0.42, 0.02],
+    [-0.31, -0.32], [0.31, -0.32],
+  ];
+  for (let i = 0; i < pos.count; i++) {
+    let x = pos.getX(i);
+    let y = pos.getY(i);
+    let z = pos.getZ(i);
+    const nx = x / 0.255;
+    const ny = y / 0.255;
+    const nz = z / 0.255;
+
+    // Orb-weaver taper toward posterior spinnerets (nz < 0) & broad shoulders (nz > 0)
+    const taper = nz > 0 ? 1.0 + nz * 0.11 : 1.0 + nz * 0.28;
+    x *= taper;
+    y *= nz < -0.25 ? 0.94 + nz * 0.15 : 1.0;
+
+    if (ny > 0.14) {
+      // Subtle dorsal cardiac ridge + folium border swell
+      const ridge = Math.exp(-nx * nx * 20) * Math.max(0, 1 - Math.abs(nz)) * 0.014;
+      let dimple = 0;
+      for (const [sx, sz] of sigillaCoords) {
+        const d2 = (nx - sx) * (nx - sx) + (nz - sz) * (nz - sz);
+        if (d2 < 0.034) {
+          dimple += (1 - d2 / 0.034) * 0.018;
+        }
+      }
+      y += ridge - dimple;
+    } else if (ny < -0.2) {
+      // Slightly tucked underside near petiole & spinnerets
+      y *= 0.85;
+    }
+
+    // Subtle lateral pleural pleats along the flanks
+    if (Math.abs(nx) > 0.55 && ny > -0.35 && ny < 0.35) {
+      const pleat = Math.sin(nz * 14.0) * 0.0042 * (Math.abs(nx) - 0.55);
+      x += Math.sign(x) * pleat;
+    }
+
+    pos.setXYZ(i, x, y, z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Builds a muscular, organically arched chitin leg segment geometry with
+ * flared articular condyle ends and mid-belly swell.
+ */
+function createMuscularLegSegGeo(
+  radiusTop: number,
+  radiusBot: number,
+  len: number,
+  archAmp = 0.022,
+  bellyFlare = 0.16,
+): THREE.BufferGeometry {
+  const geo = new THREE.CylinderGeometry(radiusTop, radiusBot, len, 14, 8);
+  geo.translate(0, len * 0.5, 0);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const t = THREE.MathUtils.clamp(y / len, 0, 1);
+    const arch = Math.sin(t * Math.PI) * archAmp;
+    const condyle = (Math.exp(-t * t * 38) + Math.exp(-(1 - t) * (1 - t) * 38)) * 0.11;
+    const swell = 1 + Math.sin(t * Math.PI) * bellyFlare + condyle;
+    pos.setXYZ(i, x * swell, y, pos.getZ(i) * swell + arch);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
 export function createPavutinModel(
   textures: ProceduralTextureSet,
   isElder = false,
@@ -240,196 +597,504 @@ export function createPavutinModel(
   root.add(body);
 
   const velvetMat = new THREE.MeshPhysicalMaterial({
-    color: isElder ? 0xdde5f2 : 0xffffff,
+    color: isElder ? 0xdde6f4 : 0xffffff,
     map: isElder ? textures.uspokhChitinMap : textures.spiderChitinMap,
     normalMap: textures.spiderChitinNormal,
-    normalScale: new THREE.Vector2(isElder ? 1.15 : 1.05, isElder ? 1.15 : 1.05),
-    roughness: isElder ? 0.84 : 0.72,
-    metalness: 0.06,
+    normalScale: new THREE.Vector2(isElder ? 1.48 : 1.42, isElder ? 1.48 : 1.42),
+    roughnessMap: textures.chitinMicroScratchMap,
+    roughness: isElder ? 0.76 : 0.62,
+    metalness: 0.09,
     sheen: 1.0,
-    sheenRoughness: 0.34,
-    sheenColor: new THREE.Color(isElder ? 0xd0e2fa : 0xb5d6ff),
+    sheenRoughness: 0.22,
+    sheenColor: new THREE.Color(isElder ? 0xe0eeff : 0xc6e2ff),
+    iridescence: isElder ? 0.18 : 0.32,
+    iridescenceIOR: 1.35,
   });
 
   const warmChitinMat = new THREE.MeshPhysicalMaterial({
-    color: isElder ? 0x676b74 : 0x5c4b3e,
-    normalMap: textures.spiderChitinNormal,
-    normalScale: new THREE.Vector2(0.7, 0.7),
-    roughness: 0.42,
-    metalness: 0.12,
-    clearcoat: 0.48,
-    clearcoatRoughness: 0.32,
+    color: isElder ? 0xcad2df : 0xffffff,
+    map: textures.spiderLegBandMap,
+    normalMap: textures.spiderLegBandNormal,
+    normalScale: new THREE.Vector2(1.05, 1.05),
+    roughnessMap: textures.chitinMicroScratchMap,
+    roughness: 0.34,
+    metalness: 0.15,
+    clearcoat: 0.82,
+    clearcoatRoughness: 0.18,
+    sheen: 0.35,
+    sheenColor: new THREE.Color(isElder ? 0xdce8f8 : 0xb8d4f5),
+    iridescence: 0.24,
+    iridescenceIOR: 1.36,
   });
 
   const legDistalMat = new THREE.MeshPhysicalMaterial({
-    color: isElder ? 0x454952 : 0x3b312a,
-    roughness: 0.36,
-    metalness: 0.14,
-    clearcoat: 0.52,
+    color: isElder ? 0x9fa8ba : 0xdfd4ca,
+    map: textures.spiderLegBandMap,
+    normalMap: textures.spiderLegBandNormal,
+    normalScale: new THREE.Vector2(0.85, 0.85),
+    roughnessMap: textures.chitinMicroScratchMap,
+    roughness: 0.28,
+    metalness: 0.18,
+    clearcoat: 0.78,
+    clearcoatRoughness: 0.16,
+    iridescence: 0.2,
+    iridescenceIOR: 1.33,
   });
 
   const darkJointMat = new THREE.MeshPhysicalMaterial({
-    color: isElder ? 0x262930 : 0x1b1a20,
-    roughness: 0.26,
-    metalness: 0.18,
-    clearcoat: 0.74,
+    color: isElder ? 0x262a33 : 0x1a1820,
+    roughnessMap: textures.chitinMicroScratchMap,
+    roughness: 0.2,
+    metalness: 0.25,
+    clearcoat: 0.9,
+    clearcoatRoughness: 0.12,
+  });
+
+  const membraneMat = new THREE.MeshPhysicalMaterial({
+    color: isElder ? 0x9aa2b2 : 0x8f7968,
+    roughness: 0.42,
+    metalness: 0.05,
+    sheen: 0.45,
+    sheenColor: new THREE.Color(0xcbd8eb),
+    clearcoat: 0.28,
+  });
+
+  const fangAmberMat = new THREE.MeshPhysicalMaterial({
+    color: 0x3a140d,
+    roughness: 0.16,
+    metalness: 0.22,
+    clearcoat: 0.95,
+    clearcoatRoughness: 0.08,
+    iridescence: 0.16,
   });
 
   const eyeMat = new THREE.MeshPhysicalMaterial({
-    color: 0x020305,
-    emissive: 0x000000,
-    emissiveIntensity: 0.0,
-    roughness: 0.03,
+    color: 0x020306,
+    emissive: 0x081020,
+    emissiveIntensity: 0.24,
+    roughness: 0.02,
     metalness: 0.96,
     clearcoat: 1.0,
     clearcoatRoughness: 0.02,
     reflectivity: 1.0,
-    envMapIntensity: 2.2,
+    envMapIntensity: 2.8,
+  });
+
+  const tapetumMat = new THREE.MeshBasicMaterial({
+    color: isElder ? 0xaedcff : 0x5cc7ff,
+    transparent: true,
+    opacity: 0.48,
+  });
+
+  const corneaMat = new THREE.MeshPhysicalMaterial({
+    color: 0xd4e8ff,
+    roughness: 0.025,
+    metalness: 0.04,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.02,
+    ior: 1.56,
+    reflectivity: 1.0,
+    transparent: true,
+    opacity: 0.34,
+    depthWrite: false,
+    envMapIntensity: 3.0,
   });
 
   const silkGlowMat = new THREE.MeshStandardMaterial({
-    color: 0xe6f2ff,
-    emissive: isElder ? 0x96b8de : 0x7eb4ff,
-    emissiveIntensity: isElder ? 0.48 : 0.68,
-    roughness: 0.25,
-    metalness: 0.15,
+    color: 0xeaf4ff,
+    emissive: isElder ? 0x98b9e0 : 0x7eb8ff,
+    emissiveIntensity: isElder ? 0.52 : 0.72,
+    roughness: 0.22,
+    metalness: 0.16,
   });
 
-  // Cephalothorax (Prosoma) — sculpted multi-part carapace
-  const cephalo = new THREE.Mesh(
-    new THREE.SphereGeometry(0.18, 22, 18),
-    velvetMat,
+  const setaeUniforms = {
+    uSetaeTime: { value: 0 },
+    uSetaeAmp: { value: 0.0055 },
+  };
+
+  const setaeLineMat = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: isElder ? 0.86 : 0.82,
+  });
+  applySetaeVibrationShader(
+    setaeLineMat,
+    setaeUniforms.uSetaeTime,
+    setaeUniforms.uSetaeAmp,
+    isElder ? 'elder_line' : 'hero_line',
   );
-  cephalo.scale.set(0.92, 0.66, 1.18);
-  cephalo.position.set(0, 0.02, 0.14);
+
+  const setaePointMat = new THREE.PointsMaterial({
+    color: isElder ? 0xedf4ff : 0xd4e6ff,
+    map: textures.setaeHairMap,
+    size: isElder ? 0.048 : 0.043,
+    sizeAttenuation: true,
+    transparent: true,
+    opacity: isElder ? 0.72 : 0.66,
+    alphaTest: 0.08,
+    depthWrite: false,
+  });
+  applySetaeVibrationShader(
+    setaePointMat,
+    setaeUniforms.uSetaeTime,
+    setaeUniforms.uSetaeAmp,
+    isElder ? 'elder_pts' : 'hero_pts',
+  );
+
+  // 1. Sculpted Cephalothorax (Prosoma) — thoracic sulci, cervical V-groove, dorsal fovea, ocular tubercle & sternum shield
+  const cephalo = new THREE.Mesh(createSculptedProsomaGeo(), velvetMat);
+  cephalo.scale.set(0.94, 0.68, 1.18);
+  cephalo.position.set(0, 0.022, 0.145);
   cephalo.castShadow = true;
+  cephalo.receiveShadow = true;
   body.add(cephalo);
 
-  const brow = new THREE.Mesh(
-    new THREE.SphereGeometry(0.11, 14, 10),
+  const sternumPlate = new THREE.Mesh(
+    new THREE.SphereGeometry(0.115, 16, 10),
+    darkJointMat,
+  );
+  sternumPlate.scale.set(0.92, 0.22, 1.32);
+  sternumPlate.position.set(0, -0.056, 0.125);
+  body.add(sternumPlate);
+
+  const labium = new THREE.Mesh(
+    new THREE.SphereGeometry(0.036, 10, 8),
     warmChitinMat,
   );
-  brow.scale.set(1.02, 0.62, 0.82);
-  brow.position.set(0, 0.065, 0.24);
+  labium.scale.set(1.1, 0.45, 0.85);
+  labium.position.set(0, -0.048, 0.258);
+  body.add(labium);
+
+  const foveaCap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.048, 14, 10),
+    darkJointMat,
+  );
+  foveaCap.scale.set(0.95, 0.22, 1.48);
+  foveaCap.position.set(0, 0.132, 0.088);
+  body.add(foveaCap);
+
+  const brow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.114, 18, 14),
+    warmChitinMat,
+  );
+  brow.scale.set(1.04, 0.62, 0.86);
+  brow.position.set(0, 0.066, 0.245);
+  brow.castShadow = true;
+  brow.receiveShadow = true;
   body.add(brow);
 
+  // Segmented Pedicel Waist + Dual Chitin Rings
   const pedicel = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.055, 0.065, 0.12, 10),
+    new THREE.CylinderGeometry(0.052, 0.064, 0.13, 12),
     darkJointMat,
   );
   pedicel.rotation.x = Math.PI / 2;
-  pedicel.position.set(0, 0.01, -0.04);
+  pedicel.position.set(0, 0.012, -0.04);
+  pedicel.castShadow = true;
   body.add(pedicel);
 
-  // Abdomen (Opisthosoma) — organic teardrop silhouette with dorsal sheen
-  const abdomen = new THREE.Mesh(
-    new THREE.SphereGeometry(0.25, 24, 18),
-    velvetMat,
-  );
-  abdomen.scale.set(isElder ? 1.04 : 0.96, isElder ? 0.88 : 0.84, 1.26);
-  abdomen.position.set(0, 0.09, -0.26);
-  abdomen.castShadow = true;
-  body.add(abdomen);
-
-  const dorsalPlate = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 16, 12),
+  const pedicelRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.06, 0.013, 8, 16),
     warmChitinMat,
   );
-  dorsalPlate.scale.set(0.7, 0.35, 0.92);
-  dorsalPlate.position.set(0, 0.21, -0.25);
-  body.add(dorsalPlate);
+  pedicelRing.position.set(0, 0.014, -0.04);
+  body.add(pedicelRing);
 
-  // 3-nozzle Spinneret cluster at tail
-  for (let s = -1; s <= 1; s++) {
+  const pedicelMembrane = new THREE.Mesh(
+    new THREE.TorusGeometry(0.054, 0.009, 6, 14),
+    membraneMat,
+  );
+  pedicelMembrane.position.set(0, 0.014, -0.015);
+  body.add(pedicelMembrane);
+
+  // 2. Sculpted Teardrop Abdomen (Opisthosoma) + Dorsal Folia Plate + Book-Lung Plates + 6-Nozzle Spinneret Rosette & Silk-Dew Bead
+  const abdomen = new THREE.Mesh(createSculptedAbdomenGeo(), velvetMat);
+  abdomen.scale.set(isElder ? 1.04 : 0.97, isElder ? 0.88 : 0.85, 1.25);
+  abdomen.position.set(0, 0.09, -0.26);
+  abdomen.castShadow = true;
+  abdomen.receiveShadow = true;
+  body.add(abdomen);
+
+  const abdSetaeGroup = new THREE.Group();
+  const abdSetae = createEllipsoidSetae(
+    0.254,
+    0.254,
+    0.254,
+    isElder ? 215 : 205,
+    isElder ? 0.044 : 0.041,
+    isElder ? 701 : 401,
+    isElder ? 0x627086 : 0x3b4863,
+    isElder ? 0xf2f7ff : 0xd6eaff,
+    setaeLineMat,
+    setaePointMat,
+    -0.4,
+    isElder ? 136 : 128,
+  );
+  abdSetaeGroup.add(abdSetae.lines);
+  if (abdSetae.points) abdSetaeGroup.add(abdSetae.points);
+  abdomen.add(abdSetaeGroup);
+
+  const cephSetaeGroup = new THREE.Group();
+  const cephSetae = createEllipsoidSetae(
+    0.184,
+    0.184,
+    0.184,
+    108,
+    0.033,
+    isElder ? 809 : 509,
+    0x45403a,
+    isElder ? 0xe8f2ff : 0xcbe2ff,
+    setaeLineMat,
+    setaePointMat,
+    -0.22,
+    74,
+  );
+  cephSetaeGroup.add(cephSetae.lines);
+  if (cephSetae.points) cephSetaeGroup.add(cephSetae.points);
+  cephalo.add(cephSetaeGroup);
+
+  // Dorsal chitin shield + ventral book-lung chitin plates anchored cleanly to abdomen
+  const dorsalPlate = new THREE.Mesh(
+    new THREE.SphereGeometry(0.145, 18, 12),
+    warmChitinMat,
+  );
+  dorsalPlate.scale.set(0.68, 0.28, 0.88);
+  dorsalPlate.position.set(0, 0.165, 0.015);
+  dorsalPlate.castShadow = true;
+  dorsalPlate.receiveShadow = true;
+  abdomen.add(dorsalPlate);
+
+  for (const side of [-1, 1] as const) {
+    const bookLung = new THREE.Mesh(
+      new THREE.SphereGeometry(0.068, 10, 8),
+      darkJointMat,
+    );
+    bookLung.scale.set(0.85, 0.28, 1.2);
+    bookLung.position.set(side * 0.09, -0.175, 0.11);
+    abdomen.add(bookLung);
+  }
+
+  // 6-Nozzle Spinneret Rosette + Basal Silk Collar + Glistening Silk-Dew Drop
+  const spCollar = new THREE.Mesh(
+    new THREE.TorusGeometry(0.056, 0.014, 8, 16),
+    darkJointMat,
+  );
+  spCollar.position.set(0, -0.052, -0.232);
+  abdomen.add(spCollar);
+
+  const spinneretLayout: [number, number, number, number, number][] = [
+    [-0.036, -0.056, -0.268, 0.028, 0.26],
+    [0.036, -0.056, -0.268, 0.028, -0.26],
+    [0, -0.038, -0.274, 0.04, 0],
+    [-0.022, -0.072, -0.262, 0.02, 0.18],
+    [0.022, -0.072, -0.262, 0.02, -0.18],
+    [0, -0.08, -0.258, 0.022, 0],
+  ];
+  for (const [sx, sy, sz, rad, rz] of spinneretLayout) {
     const sp = new THREE.Mesh(
-      new THREE.ConeGeometry(s === 0 ? 0.042 : 0.028, 0.11, 10),
+      new THREE.ConeGeometry(rad, 0.095, 10),
       silkGlowMat,
     );
     sp.rotation.x = -Math.PI / 2 - 0.18;
-    sp.rotation.z = s * 0.22;
-    sp.position.set(s * 0.038, 0.03 + (s === 0 ? 0.015 : 0), -0.56);
-    body.add(sp);
+    sp.rotation.z = rz;
+    sp.position.set(sx, sy, sz);
+    sp.castShadow = true;
+    abdomen.add(sp);
   }
 
-  // 8 Wet-Look Eyes
-  const mainEyeGeo = new THREE.SphereGeometry(0.036, 16, 14);
-  const midEyeGeo = new THREE.SphereGeometry(0.021, 12, 10);
-  const smallEyeGeo = new THREE.SphereGeometry(0.015, 10, 8);
+  const silkBead = new THREE.Mesh(
+    new THREE.SphereGeometry(0.02, 12, 10),
+    silkGlowMat,
+  );
+  silkBead.position.set(0, -0.06, -0.312);
+  abdomen.add(silkBead);
+
+  // 3. 8 Multi-Layer Optical Ocelli Eyes (Tapetum Glint + Dark Retina + Refractive Cornea + Ocular Arches)
+  const mainEyeGeo = new THREE.SphereGeometry(0.035, 18, 14);
+  const mainTapetumGeo = new THREE.SphereGeometry(0.022, 12, 10);
+  const mainCorneaGeo = new THREE.SphereGeometry(0.0395, 18, 14);
+  const midEyeGeo = new THREE.SphereGeometry(0.02, 12, 10);
+  const midTapetumGeo = new THREE.SphereGeometry(0.013, 10, 8);
+  const midCorneaGeo = new THREE.SphereGeometry(0.0235, 12, 10);
+  const smallEyeGeo = new THREE.SphereGeometry(0.0145, 10, 8);
+  const smallCorneaGeo = new THREE.SphereGeometry(0.017, 10, 8);
+  const eyeRidgeGeo = new THREE.TorusGeometry(0.039, 0.0085, 6, 14, Math.PI);
+
   for (const side of [-1, 1] as const) {
     const ame = new THREE.Mesh(mainEyeGeo, eyeMat);
-    ame.position.set(side * 0.048, 0.072, 0.325);
-    body.add(ame);
+    ame.position.set(side * 0.048, 0.074, 0.326);
+    const ameGlint = new THREE.Mesh(mainTapetumGeo, tapetumMat);
+    ameGlint.position.set(side * 0.047, 0.08, 0.341);
+    const ameCornea = new THREE.Mesh(mainCorneaGeo, corneaMat);
+    ameCornea.position.copy(ame.position);
+    ameCornea.position.z += 0.003;
+    body.add(ame, ameGlint, ameCornea);
+
+    const ridge = new THREE.Mesh(eyeRidgeGeo, warmChitinMat);
+    ridge.position.set(side * 0.048, 0.08, 0.322);
+    ridge.rotation.z = -side * 0.18;
+    body.add(ridge);
 
     const ale = new THREE.Mesh(midEyeGeo, eyeMat);
-    ale.position.set(side * 0.098, 0.064, 0.292);
-    body.add(ale);
+    ale.position.set(side * 0.098, 0.065, 0.293);
+    const aleGlint = new THREE.Mesh(midTapetumGeo, tapetumMat);
+    aleGlint.position.set(side * 0.102, 0.069, 0.302);
+    const aleCornea = new THREE.Mesh(midCorneaGeo, corneaMat);
+    aleCornea.position.copy(ale.position);
+    aleCornea.position.z += 0.002;
+    body.add(ale, aleGlint, aleCornea);
 
     const pme = new THREE.Mesh(smallEyeGeo, eyeMat);
-    pme.position.set(side * 0.046, 0.112, 0.285);
-    body.add(pme);
+    pme.position.set(side * 0.046, 0.114, 0.286);
+    const pmeCornea = new THREE.Mesh(smallCorneaGeo, corneaMat);
+    pmeCornea.position.copy(pme.position);
+    body.add(pme, pmeCornea);
 
     const ple = new THREE.Mesh(smallEyeGeo, eyeMat);
-    ple.position.set(side * 0.112, 0.092, 0.252);
-    body.add(ple);
+    ple.position.set(side * 0.112, 0.094, 0.252);
+    const pleCornea = new THREE.Mesh(smallCorneaGeo, corneaMat);
+    pleCornea.position.copy(ple.position);
+    body.add(ple, pleCornea);
   }
 
-  // Articulated Chelicerae + Dark Fangs
+  // 4. Articulated Chelicerae + Basal Bosses + Dorsal Keel + 4 Medial Denticles + Curved Saber Fangs
   const chelicerae: [THREE.Group, THREE.Group] = [
     new THREE.Group(),
     new THREE.Group(),
   ];
-  const chelGeo = new THREE.CapsuleGeometry(0.026, 0.06, 6, 8);
-  const fangGeo = new THREE.ConeGeometry(0.011, 0.055, 8);
+  const chelGeo = new THREE.CapsuleGeometry(0.03, 0.066, 8, 12);
+  const keelGeo = new THREE.CapsuleGeometry(0.011, 0.056, 6, 8);
+  const bossGeo = new THREE.SphereGeometry(0.022, 10, 8);
+  const toothGeo = new THREE.ConeGeometry(0.0044, 0.013, 6);
+  const fangBaseGeo = new THREE.ConeGeometry(0.0125, 0.04, 10);
+  const fangMidGeo = new THREE.ConeGeometry(0.009, 0.032, 10);
+  const fangTipGeo = new THREE.ConeGeometry(0.0052, 0.026, 8);
   ([-1, 1] as const).forEach((side, idx) => {
     const cg = chelicerae[idx];
-    cg.position.set(side * 0.038, -0.015, 0.305);
+    cg.position.set(side * 0.038, -0.014, 0.306);
+    const boss = new THREE.Mesh(bossGeo, warmChitinMat);
+    boss.position.set(0, 0.019, -0.007);
+    cg.add(boss);
+
     const basal = new THREE.Mesh(chelGeo, darkJointMat);
     basal.rotation.x = Math.PI / 2.8;
+    basal.castShadow = true;
     cg.add(basal);
-    const fang = new THREE.Mesh(fangGeo, eyeMat);
-    fang.position.set(-side * 0.01, -0.048, 0.032);
-    fang.rotation.x = Math.PI;
-    fang.rotation.z = side * 0.35;
-    cg.add(fang);
+
+    const keel = new THREE.Mesh(keelGeo, warmChitinMat);
+    keel.rotation.x = Math.PI / 2.8;
+    keel.position.set(side * 0.008, 0.011, 0.016);
+    cg.add(keel);
+
+    // Medial cheliceral denticle row
+    for (let t = 0; t < 4; t++) {
+      const tooth = new THREE.Mesh(toothGeo, warmChitinMat);
+      tooth.position.set(-side * 0.021, -0.015 - t * 0.01, 0.015 + t * 0.005);
+      tooth.rotation.z = side * (Math.PI / 2);
+      cg.add(tooth);
+    }
+
+    const fangBase = new THREE.Mesh(fangBaseGeo, fangAmberMat);
+    fangBase.position.set(-side * 0.008, -0.04, 0.03);
+    fangBase.rotation.x = Math.PI * 0.92;
+    fangBase.rotation.z = side * 0.28;
+    cg.add(fangBase);
+
+    const fangMid = new THREE.Mesh(fangMidGeo, fangAmberMat);
+    fangMid.position.set(-side * 0.017, -0.058, 0.028);
+    fangMid.rotation.x = Math.PI * 1.04;
+    fangMid.rotation.z = side * 0.48;
+    cg.add(fangMid);
+
+    const fangTip = new THREE.Mesh(fangTipGeo, eyeMat);
+    fangTip.position.set(-side * 0.025, -0.071, 0.021);
+    fangTip.rotation.x = Math.PI * 1.18;
+    fangTip.rotation.z = side * 0.72;
+    cg.add(fangTip);
     body.add(cg);
   });
 
-  // 2 Multi-Segment Pedipalps
+  // 5. 6-Part Articulated Setose Pedipalps (Coxa-Endite, Trochanter, Femur, Patella, Tibia, Tarsus Tip)
   const pedipalps: [THREE.Group, THREE.Group] = [
     new THREE.Group(),
     new THREE.Group(),
   ];
-  const palpSeg1 = new THREE.CapsuleGeometry(0.02, 0.09, 5, 8);
-  const palpSeg2 = new THREE.ConeGeometry(0.018, 0.09, 8);
+  const palpCoxaGeo = new THREE.SphereGeometry(0.021, 10, 8);
+  const palpTrochGeo = new THREE.SphereGeometry(0.014, 8, 8);
+  const palpFemurGeo = new THREE.CapsuleGeometry(0.017, 0.056, 6, 8);
+  const palpPatellaGeo = new THREE.SphereGeometry(0.018, 8, 8);
+  const palpTibiaGeo = new THREE.CapsuleGeometry(0.014, 0.048, 6, 8);
+  const palpBulbGeo = new THREE.ConeGeometry(0.015, 0.068, 8);
+  const palpSetaeGeo = createLegSegmentSetaeGeo(0.068, 0.015, 1, 12, 0.026, 733);
   ([-1, 1] as const).forEach((side, idx) => {
     const pGroup = pedipalps[idx];
     pGroup.position.set(side * 0.095, -0.015, 0.28);
-    const seg1 = new THREE.Mesh(palpSeg1, warmChitinMat);
-    seg1.rotation.x = Math.PI / 2.6;
-    seg1.rotation.z = side * -0.25;
-    seg1.position.set(side * 0.022, -0.025, 0.058);
-    pGroup.add(seg1);
 
-    const tip = new THREE.Mesh(palpSeg2, darkJointMat);
-    tip.rotation.x = Math.PI / 1.9;
-    tip.position.set(side * 0.038, -0.055, 0.13);
-    pGroup.add(tip);
+    const pCoxa = new THREE.Mesh(palpCoxaGeo, darkJointMat);
+    pCoxa.scale.set(1.15, 0.9, 1.1);
+    pGroup.add(pCoxa);
+
+    const pTroch = new THREE.Mesh(palpTrochGeo, membraneMat);
+    pTroch.position.set(side * 0.008, -0.005, 0.014);
+    pGroup.add(pTroch);
+
+    const pFemur = new THREE.Mesh(palpFemurGeo, warmChitinMat);
+    pFemur.rotation.x = Math.PI / 2.8;
+    pFemur.rotation.z = side * -0.28;
+    pFemur.position.set(side * 0.018, -0.015, 0.038);
+    pFemur.castShadow = true;
+    pGroup.add(pFemur);
+
+    const pPatella = new THREE.Mesh(palpPatellaGeo, darkJointMat);
+    pPatella.position.set(side * 0.03, -0.028, 0.072);
+    pGroup.add(pPatella);
+
+    const pTibia = new THREE.Mesh(palpTibiaGeo, legDistalMat);
+    pTibia.rotation.x = Math.PI / 2.2;
+    pTibia.rotation.z = side * 0.16;
+    pTibia.position.set(side * 0.034, -0.046, 0.105);
+    pTibia.castShadow = true;
+    pGroup.add(pTibia);
+
+    const pBulb = new THREE.Mesh(palpBulbGeo, darkJointMat);
+    pBulb.rotation.x = Math.PI / 1.75;
+    pBulb.position.set(side * 0.035, -0.066, 0.146);
+    pBulb.castShadow = true;
+    pGroup.add(pBulb);
+
+    const pHairs = new THREE.LineSegments(palpSetaeGeo, setaeLineMat);
+    pHairs.position.copy(pTibia.position);
+    pHairs.rotation.x = Math.PI / 2.2;
+    pGroup.add(pHairs);
     body.add(pGroup);
   });
 
-  // 8 True 4-Segment Hierarchical Legs + Tarsal Claws + Sensory Setae
+  // 6. True 7-Part Anatomical Articulated Legs (Coxa, Trochanter, Arched Banded Femur, Patella + Hinge Membrane, Muscular Tibia, Metatarsus, Tarsus + Triple Claws + Scopula)
   const legs: PavutinRig['legs'] = [];
-  const coxaGeo = new THREE.SphereGeometry(0.03, 10, 8);
-  const femurGeo = new THREE.CylinderGeometry(0.017, 0.023, 0.34, 10);
-  femurGeo.translate(0, 0.17, 0);
-  const patellaGeo = new THREE.SphereGeometry(0.023, 10, 8);
-  const tibiaGeo = new THREE.CylinderGeometry(0.013, 0.018, 0.3, 10);
-  tibiaGeo.translate(0, 0.15, 0);
-  const ankleJointGeo = new THREE.SphereGeometry(0.016, 8, 8);
-  const tarsusGeo = new THREE.CylinderGeometry(0.005, 0.012, 0.18, 8);
-  tarsusGeo.translate(0, 0.09, 0);
-  const clawGeo = new THREE.ConeGeometry(0.0045, 0.032, 5);
-  const bristleGeo = new THREE.ConeGeometry(0.0038, 0.052, 5);
+  const coxaGeo = new THREE.SphereGeometry(0.033, 12, 10);
+  const trochanterGeo = createMuscularLegSegGeo(0.022, 0.025, 0.042, 0.004, 0.08);
+  const femurGeo = createMuscularLegSegGeo(0.0185, 0.0255, 0.34, 0.024, 0.18);
+  const patellaGeo = new THREE.SphereGeometry(0.025, 12, 10);
+  const patellaMembraneGeo = new THREE.TorusGeometry(0.02, 0.0055, 6, 12);
+  const tibiaGeo = createMuscularLegSegGeo(0.013, 0.0195, 0.3, 0.012, 0.12);
+  const ankleJointGeo = new THREE.SphereGeometry(0.016, 10, 8);
+  const ankleMembraneGeo = new THREE.TorusGeometry(0.0135, 0.004, 6, 10);
+  const metatarsusGeo = createMuscularLegSegGeo(0.009, 0.013, 0.115, 0.004, 0.08);
+  const tarsusJointGeo = new THREE.SphereGeometry(0.01, 8, 8);
+  const tarsusGeo = new THREE.CylinderGeometry(0.0042, 0.009, 0.075, 10);
+  tarsusGeo.translate(0, 0.0375, 0);
+  const scopulaGeo = new THREE.SphereGeometry(0.0125, 8, 6);
+  const clawGeo = new THREE.ConeGeometry(0.0038, 0.03, 6);
+  const medianClawGeo = new THREE.ConeGeometry(0.0028, 0.021, 6);
+  const bristleGeo = new THREE.ConeGeometry(0.0036, 0.056, 6);
+
+  const femurSetaeGeoL = createLegSegmentSetaeGeo(0.34, 0.021, -1, 32, 0.044, 613);
+  const femurSetaeGeoR = createLegSegmentSetaeGeo(0.34, 0.021, 1, 32, 0.044, 617);
+  const tibiaSetaeGeoL = createLegSegmentSetaeGeo(0.3, 0.016, -1, 24, 0.04, 631);
+  const tibiaSetaeGeoR = createLegSegmentSetaeGeo(0.3, 0.016, 1, 24, 0.04, 641);
+  const metaSetaeGeoL = createLegSegmentSetaeGeo(0.115, 0.011, -1, 14, 0.03, 653);
+  const metaSetaeGeoR = createLegSegmentSetaeGeo(0.115, 0.011, 1, 14, 0.03, 661);
 
   const zOffsets = [0.16, 0.075, -0.02, -0.11];
   const baseYawSpread = [0.76, 0.28, -0.26, -0.78];
@@ -443,21 +1108,34 @@ export function createPavutinModel(
       hip.rotation.y = side * baseYawSpread[i];
 
       const coxa = new THREE.Mesh(coxaGeo, darkJointMat);
+      coxa.scale.set(1.08, 0.94, 1.04);
+      coxa.castShadow = true;
       hip.add(coxa);
 
       const femurPivot = new THREE.Group();
       femurPivot.rotation.z = -side * 0.92;
       hip.add(femurPivot);
 
+      const trochanter = new THREE.Mesh(trochanterGeo, darkJointMat);
+      trochanter.castShadow = true;
+      femurPivot.add(trochanter);
+
       const femur = new THREE.Mesh(femurGeo, warmChitinMat);
       femur.scale.set(1, ls, 1);
       femur.castShadow = true;
+      femur.receiveShadow = true;
       femurPivot.add(femur);
 
-      for (let b = 0; b < 2; b++) {
+      const femSetae = new THREE.LineSegments(
+        side === -1 ? femurSetaeGeoL : femurSetaeGeoR,
+        setaeLineMat,
+      );
+      femur.add(femSetae);
+
+      for (let b = 0; b < 3; b++) {
         const spine = new THREE.Mesh(bristleGeo, darkJointMat);
-        spine.position.set(-side * 0.015, 0.12 + b * 0.11, 0.01);
-        spine.rotation.z = side * 0.72;
+        spine.position.set(-side * 0.016, 0.09 + b * 0.09, 0.012);
+        spine.rotation.z = side * 0.74;
         femur.add(spine);
       }
 
@@ -470,17 +1148,33 @@ export function createPavutinModel(
       kneeRest.add(knee);
 
       const patella = new THREE.Mesh(patellaGeo, darkJointMat);
+      patella.scale.set(1.0, 1.18, 1.0);
+      patella.castShadow = true;
       knee.add(patella);
+
+      const patellaMembrane = new THREE.Mesh(patellaMembraneGeo, membraneMat);
+      patellaMembrane.rotation.x = Math.PI / 2;
+      patellaMembrane.position.set(0, -0.008, 0);
+      knee.add(patellaMembrane);
 
       const tibia = new THREE.Mesh(tibiaGeo, legDistalMat);
       tibia.scale.set(1, ls, 1);
       tibia.castShadow = true;
+      tibia.receiveShadow = true;
       knee.add(tibia);
 
-      const tibSpine = new THREE.Mesh(bristleGeo, darkJointMat);
-      tibSpine.position.set(-side * 0.012, 0.16, 0.008);
-      tibSpine.rotation.z = side * 0.78;
-      tibia.add(tibSpine);
+      const tibSetae = new THREE.LineSegments(
+        side === -1 ? tibiaSetaeGeoL : tibiaSetaeGeoR,
+        setaeLineMat,
+      );
+      tibia.add(tibSetae);
+
+      for (let b = 0; b < 2; b++) {
+        const tibSpine = new THREE.Mesh(bristleGeo, darkJointMat);
+        tibSpine.position.set(-side * 0.012, 0.1 + b * 0.11, 0.008);
+        tibSpine.rotation.z = side * 0.78;
+        tibia.add(tibSpine);
+      }
 
       const ankleRest = new THREE.Group();
       ankleRest.position.set(0, 0.3 * ls, 0);
@@ -493,14 +1187,52 @@ export function createPavutinModel(
       const ankleJoint = new THREE.Mesh(ankleJointGeo, darkJointMat);
       ankle.add(ankleJoint);
 
+      const ankleMembrane = new THREE.Mesh(ankleMembraneGeo, membraneMat);
+      ankleMembrane.rotation.x = Math.PI / 2;
+      ankleMembrane.position.set(0, -0.006, 0);
+      ankle.add(ankleMembrane);
+
+      const metatarsus = new THREE.Mesh(metatarsusGeo, legDistalMat);
+      metatarsus.scale.set(1, ls, 1);
+      metatarsus.castShadow = true;
+      ankle.add(metatarsus);
+
+      const metaSetae = new THREE.LineSegments(
+        side === -1 ? metaSetaeGeoL : metaSetaeGeoR,
+        setaeLineMat,
+      );
+      metatarsus.add(metaSetae);
+
+      const tarsalBridge = new THREE.Group();
+      tarsalBridge.position.set(0, 0.115 * ls, 0);
+      tarsalBridge.rotation.z = -side * 0.14;
+      ankle.add(tarsalBridge);
+
+      const tarsusJoint = new THREE.Mesh(tarsusJointGeo, darkJointMat);
+      tarsalBridge.add(tarsusJoint);
+
       const tarsus = new THREE.Mesh(tarsusGeo, legDistalMat);
       tarsus.scale.set(1, ls, 1);
-      ankle.add(tarsus);
+      tarsus.castShadow = true;
+      tarsalBridge.add(tarsus);
 
-      const claw = new THREE.Mesh(clawGeo, eyeMat);
-      claw.position.set(-side * 0.006, 0.185 * ls, 0);
-      claw.rotation.z = side * 0.55;
-      ankle.add(claw);
+      const scopula = new THREE.Mesh(scopulaGeo, velvetMat);
+      scopula.scale.set(0.88, 1.4, 0.88);
+      scopula.position.set(0, 0.056 * ls, 0);
+      tarsalBridge.add(scopula);
+
+      // Triple tarsal claws (paired lateral claws + hooked median web-grasping claw)
+      for (const cSide of [-1, 1] as const) {
+        const claw = new THREE.Mesh(clawGeo, eyeMat);
+        claw.position.set(-side * 0.006, 0.075 * ls, cSide * 0.0042);
+        claw.rotation.z = side * 0.58;
+        claw.rotation.x = cSide * 0.16;
+        tarsalBridge.add(claw);
+      }
+      const medianClaw = new THREE.Mesh(medianClawGeo, fangAmberMat);
+      medianClaw.position.set(-side * 0.009, 0.071 * ls, 0);
+      medianClaw.rotation.z = side * 0.92;
+      tarsalBridge.add(medianClaw);
 
       body.add(hip);
       legs.push({ hip, knee, ankle, side, index: i });
@@ -508,12 +1240,12 @@ export function createPavutinModel(
   }
 
   const shadowDisc = new THREE.Mesh(
-    new THREE.CircleGeometry(0.62, 22),
+    new THREE.CircleGeometry(0.64, 24),
     new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: textures.contactShadowMap,
       transparent: true,
-      opacity: 0.56,
+      opacity: 0.58,
       roughness: 1.0,
       metalness: 0.0,
       envMapIntensity: 0,
@@ -537,6 +1269,9 @@ export function createPavutinModel(
     legs,
     shadowDisc,
     silkGlowMat,
+    setaeUniforms,
+    abdSetaeGroup,
+    cephSetaeGroup,
   };
 }
 
@@ -553,23 +1288,45 @@ export function createKhryazhSyakayaModel(
   const chitinDark = new THREE.MeshPhysicalMaterial({
     color: 0x181410,
     normalMap: textures.waspScaleNormal,
-    normalScale: new THREE.Vector2(1.0, 1.0),
+    normalScale: new THREE.Vector2(1.15, 1.15),
+    roughnessMap: textures.chitinMicroScratchMap,
     roughness: 0.24,
     metalness: 0.28,
-    clearcoat: 0.92,
-    clearcoatRoughness: 0.14,
+    clearcoat: 0.96,
+    clearcoatRoughness: 0.12,
+    sheen: 0.35,
+    sheenRoughness: 0.45,
+    sheenColor: new THREE.Color(0xcfa452),
   });
 
   const scaleArmorMat = new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
     map: textures.waspScaleMap,
     normalMap: textures.waspScaleNormal,
-    normalScale: new THREE.Vector2(1.15, 1.15),
-    roughness: 0.25,
-    metalness: 0.26,
-    clearcoat: 0.9,
-    iridescence: 0.48,
-    iridescenceIOR: 1.36,
+    normalScale: new THREE.Vector2(1.28, 1.28),
+    roughnessMap: textures.chitinMicroScratchMap,
+    roughness: 0.22,
+    metalness: 0.3,
+    clearcoat: 0.94,
+    clearcoatRoughness: 0.1,
+    iridescence: 0.54,
+    iridescenceIOR: 1.38,
+  });
+
+  const waspSetaeLineMat = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.68,
+  });
+  const waspSetaePointMat = new THREE.PointsMaterial({
+    color: 0xffd27a,
+    map: textures.setaeHairMap,
+    size: 0.044,
+    sizeAttenuation: true,
+    transparent: true,
+    opacity: 0.5,
+    alphaTest: 0.08,
+    depthWrite: false,
   });
 
   const compoundEyeMat = new THREE.MeshPhysicalMaterial({
@@ -615,12 +1372,39 @@ export function createKhryazhSyakayaModel(
   });
 
   const thorax = new THREE.Mesh(
-    new THREE.SphereGeometry(0.28, 20, 16),
+    new THREE.SphereGeometry(0.28, 22, 16),
     chitinDark,
   );
   thorax.scale.set(0.92, 0.86, 1.38);
   thorax.castShadow = true;
+  thorax.receiveShadow = true;
   body.add(thorax);
+
+  const thoraxFuzz = createEllipsoidSetae(
+    0.278,
+    0.278,
+    0.278,
+    84,
+    0.044,
+    937,
+    0x3b2a14,
+    0xf5c86b,
+    waspSetaeLineMat,
+    waspSetaePointMat,
+    -0.1,
+    56,
+  );
+  thorax.add(thoraxFuzz.lines);
+  if (thoraxFuzz.points) thorax.add(thoraxFuzz.points);
+
+  const scutellum = new THREE.Mesh(
+    new THREE.SphereGeometry(0.14, 14, 10),
+    scaleArmorMat,
+  );
+  scutellum.scale.set(1.15, 0.56, 1.05);
+  scutellum.position.set(0, 0.2, -0.14);
+  scutellum.castShadow = true;
+  body.add(scutellum);
 
   const pronotum = new THREE.Mesh(
     new THREE.TorusGeometry(0.21, 0.055, 8, 16),
@@ -628,7 +1412,19 @@ export function createKhryazhSyakayaModel(
   );
   pronotum.position.set(0, 0.05, 0.22);
   pronotum.scale.set(1.05, 0.85, 0.7);
+  pronotum.castShadow = true;
+  pronotum.receiveShadow = true;
   body.add(pronotum);
+
+  for (const s of [-1, 1] as const) {
+    const tegula = new THREE.Mesh(
+      new THREE.SphereGeometry(0.055, 8, 8),
+      scaleArmorMat,
+    );
+    tegula.scale.set(0.75, 0.6, 1.25);
+    tegula.position.set(s * 0.16, 0.21, 0.12);
+    body.add(tegula);
+  }
 
   const head = new THREE.Group();
   head.position.set(0, 0.03, 0.48);
@@ -639,7 +1435,21 @@ export function createKhryazhSyakayaModel(
     scaleArmorMat,
   );
   cranium.scale.set(1.1, 0.95, 0.82);
+  cranium.castShadow = true;
+  cranium.receiveShadow = true;
   head.add(cranium);
+
+  // 3 dorsal vertex ocelli catching moonlight
+  const ocellusGeo = new THREE.SphereGeometry(0.017, 8, 8);
+  [
+    [0, 0.168, 0.08],
+    [-0.036, 0.162, 0.04],
+    [0.036, 0.162, 0.04],
+  ].forEach(([ox, oy, oz]) => {
+    const oc = new THREE.Mesh(ocellusGeo, compoundEyeMat);
+    oc.position.set(ox, oy, oz);
+    head.add(oc);
+  });
 
   const eyeGeo = new THREE.SphereGeometry(0.095, 14, 12);
   const antGeo1 = new THREE.CylinderGeometry(0.015, 0.012, 0.18, 6);
@@ -676,6 +1486,7 @@ export function createKhryazhSyakayaModel(
     mandible.position.set(s * 0.06, -0.11, 0.1);
     mandible.rotation.x = Math.PI * 0.78;
     mandible.rotation.z = s * 0.45;
+    mandible.castShadow = true;
     head.add(mandible);
   });
 
@@ -689,6 +1500,7 @@ export function createKhryazhSyakayaModel(
   );
   petiole.rotation.x = Math.PI / 2;
   petiole.position.set(0, 0.02, -0.02);
+  petiole.castShadow = true;
   abdomen.add(petiole);
 
   const segZ = [-0.16, -0.32, -0.5, -0.68, -0.84, -0.97];
@@ -701,6 +1513,7 @@ export function createKhryazhSyakayaModel(
     seg.scale.set(0.95, 0.9, 0.72);
     seg.position.set(0, -i * 0.018, zPos);
     seg.castShadow = true;
+    seg.receiveShadow = true;
     abdomen.add(seg);
   });
 
@@ -710,11 +1523,13 @@ export function createKhryazhSyakayaModel(
   );
   stinger.rotation.x = -Math.PI / 2 - 0.1;
   stinger.position.set(0, -0.1, -1.12);
+  stinger.castShadow = true;
   abdomen.add(stinger);
 
   const legs: THREE.Group[] = [];
   const wFemurGeo = new THREE.CylinderGeometry(0.018, 0.013, 0.28, 6);
   const wTibiaGeo = new THREE.CylinderGeometry(0.012, 0.006, 0.34, 6);
+  const spurGeo = new THREE.ConeGeometry(0.0045, 0.045, 5);
   for (let i = 0; i < 3; i++) {
     for (const s of [-1, 1] as const) {
       const leg = new THREE.Group();
@@ -723,13 +1538,22 @@ export function createKhryazhSyakayaModel(
       fem.rotation.z = s * 0.65;
       fem.rotation.x = -0.35 - i * 0.12;
       fem.position.set(s * 0.08, -0.08, -0.04);
+      fem.castShadow = true;
       leg.add(fem);
 
       const tib = new THREE.Mesh(wTibiaGeo, scaleArmorMat);
       tib.rotation.z = s * 0.25;
       tib.rotation.x = -0.55 - i * 0.18;
       tib.position.set(s * 0.14, -0.24, -0.16);
+      tib.castShadow = true;
       leg.add(tib);
+
+      if (i === 2) {
+        const spur = new THREE.Mesh(spurGeo, chitinDark);
+        spur.position.set(s * 0.015, -0.08, 0.01);
+        spur.rotation.z = -s * 0.7;
+        tib.add(spur);
+      }
 
       body.add(leg);
       legs.push(leg);
@@ -779,18 +1603,19 @@ export function createKhryazhSyakayaModel(
   blurRight.rotation.z = 0.35;
   body.add(blurRight);
 
+  const shadowDiscMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: textures.contactShadowMap,
+    transparent: true,
+    opacity: 0.45,
+    roughness: 1.0,
+    metalness: 0.0,
+    envMapIntensity: 0,
+    depthWrite: false,
+  });
   const shadowDisc = new THREE.Mesh(
     new THREE.CircleGeometry(1.05, 22),
-    new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      map: textures.contactShadowMap,
-      transparent: true,
-      opacity: 0.45,
-      roughness: 1.0,
-      metalness: 0.0,
-      envMapIntensity: 0,
-      depthWrite: false,
-    }),
+    shadowDiscMat,
   );
   shadowDisc.rotation.x = -Math.PI / 2;
   root.add(shadowDisc);
@@ -806,6 +1631,9 @@ export function createKhryazhSyakayaModel(
     abdomen,
     legs,
     shadowDisc,
+    wingMat,
+    blurMat,
+    shadowDiscMat,
   };
 }
 
@@ -1053,6 +1881,23 @@ export function createFlyModel(
     body.add(tearOrb);
   }
 
+  const silkWrapMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.155 * scaleMod, 10, 8),
+    new THREE.MeshPhysicalMaterial({
+      color: 0xeaf5ff,
+      emissive: 0x7cbfff,
+      emissiveIntensity: 0.72,
+      transparent: true,
+      opacity: 0.42,
+      roughness: 0.25,
+      wireframe: true,
+    }),
+  );
+  silkWrapMesh.scale.set(1.05, 0.92, 1.55);
+  silkWrapMesh.position.set(0, 0.01, -0.04 * scaleMod);
+  silkWrapMesh.visible = false;
+  body.add(silkWrapMesh);
+
   const shadowDisc = new THREE.Mesh(
     new THREE.CircleGeometry(0.24, 14),
     new THREE.MeshStandardMaterial({
@@ -1076,6 +1921,7 @@ export function createFlyModel(
     blurFans: [blurLeft, blurRight],
     halteres: [halLeft, halRight],
     legsGroup,
+    silkWrapMesh,
     tearOrb,
     shadowDisc,
   };
@@ -1092,6 +1938,7 @@ export function createForestWorld(
 
   const windTimeUniform = { value: 0 };
   const windStrengthUniform = { value: 0.18 };
+  const windEnabledUniform = { value: 1.0 };
 
   const trackGeo = <T extends THREE.BufferGeometry>(g: T): T => {
     disposableGeos.push(g);
@@ -1295,6 +2142,24 @@ export function createForestWorld(
       metalness: 0.05,
     }),
   );
+  const nearRockMat = trackMat(
+    new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      map: textures.mossyRockMap,
+      normalMap: textures.mossyRockNormal,
+      normalScale: new THREE.Vector2(1.75, 1.75),
+      roughnessMap: textures.mossyRockRoughness,
+      aoMap: textures.rockAo,
+      aoMapIntensity: 0.9,
+      roughness: 0.88,
+      metalness: 0.03,
+      sheen: 0.42,
+      sheenRoughness: 0.72,
+      sheenColor: new THREE.Color(0x4b7d45),
+      clearcoat: 0.14,
+      clearcoatRoughness: 0.52,
+    }),
+  );
   const lichenMat = trackMat(
     new THREE.MeshStandardMaterial({
       color: 0xffffff,
@@ -1359,7 +2224,7 @@ export function createForestWorld(
       side: THREE.DoubleSide,
     }),
   );
-  applyFoliageWindShader(canopyMat, windTimeUniform, windStrengthUniform, 0.34, true);
+  applyFoliageWindShader(canopyMat, windTimeUniform, windStrengthUniform, windEnabledUniform, 0.34, true);
 
   // Collect all flat alpha-mapped moss overlay planes for single-InstancedMesh rendering
   const mossOverlayPlacements: {
@@ -2055,7 +2920,7 @@ export function createForestWorld(
     list: { x: number; y: number; z: number; sx: number; sy: number; sz: number; rotY: number }[],
     seed: number,
   ) => {
-    const inst = new THREE.InstancedMesh(geo, rockMat, list.length);
+    const inst = new THREE.InstancedMesh(geo, nearRockMat, list.length);
     inst.castShadow = !isSoftwareGl;
     inst.receiveShadow = !isSoftwareGl;
     list.forEach((r, i) => {
@@ -2064,12 +2929,13 @@ export function createForestWorld(
       dummy.scale.set(r.sx, r.sy, r.sz);
       dummy.updateMatrix();
       inst.setMatrixAt(i, dummy.matrix);
-      // Varied weathered mineral hues: slate blue-grey, mossy granite, iron-charcoal
-      colorTint.setHSL(0.56 - (i % 3) * 0.08, 0.08 + (i % 2) * 0.06, 0.72 + ((i + seed) % 4) * 0.07);
+      // Varied weathered mineral + mossy emerald-slate hues for nearby boulders
+      colorTint.setHSL(0.46 - (i % 3) * 0.06, 0.14 + (i % 2) * 0.06, 0.74 + ((i + seed) % 4) * 0.07);
       inst.setColorAt(i, colorTint);
     });
     inst.computeBoundingSphere();
     if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+    inst.matrixAutoUpdate = false;
     scene.add(inst);
   };
   populateRocks(rockGeoA, rockListA, 1);
@@ -2205,7 +3071,7 @@ export function createForestWorld(
       side: THREE.DoubleSide,
     }),
   );
-  applyFoliageWindShader(nettleLeafMat, windTimeUniform, windStrengthUniform, 0.52);
+  applyFoliageWindShader(nettleLeafMat, windTimeUniform, windStrengthUniform, windEnabledUniform, 0.52);
 
   const stemsPerZone = 16;
   const leavesPerStem = 5;
@@ -2223,7 +3089,7 @@ export function createForestWorld(
       roughness: 0.84,
     }),
   );
-  applyFoliageWindShader(stemMat, windTimeUniform, windStrengthUniform, 0.28);
+  applyFoliageWindShader(stemMat, windTimeUniform, windStrengthUniform, windEnabledUniform, 0.28);
 
   const stemInstances = new THREE.InstancedMesh(stemGeo, stemMat, totalStems);
   const nettleLeafInstances = new THREE.InstancedMesh(nettleLeafGeo, nettleLeafMat, totalLeaves);
@@ -2296,7 +3162,7 @@ export function createForestWorld(
       side: THREE.DoubleSide,
     }),
   );
-  applyFoliageWindShader(fernMat, windTimeUniform, windStrengthUniform, 0.58);
+  applyFoliageWindShader(fernMat, windTimeUniform, windStrengthUniform, windEnabledUniform, 0.58);
 
   const fernClusterCount = 20;
   const frondsPerCluster = 6;
@@ -2358,7 +3224,7 @@ export function createForestWorld(
       side: THREE.DoubleSide,
     }),
   );
-  applyFoliageWindShader(grassMat, windTimeUniform, windStrengthUniform, 0.64);
+  applyFoliageWindShader(grassMat, windTimeUniform, windStrengthUniform, windEnabledUniform, 0.64);
 
   const nearGrassCoords: { x: number; z: number; s: number; rotY: number; shade: number }[] = [];
   const farGrassCoords: { x: number; z: number; s: number; shade: number }[] = [];
@@ -2435,8 +3301,9 @@ export function createForestWorld(
   grassSpriteMat.onBeforeCompile = (shader) => {
     shader.uniforms.uWindTime = windTimeUniform;
     shader.uniforms.uWindStrength = windStrengthUniform;
+    shader.uniforms.uWindEnabled = windEnabledUniform;
     shader.vertexShader =
-      `uniform float uWindTime;\nuniform float uWindStrength;\n` + shader.vertexShader;
+      `uniform float uWindTime;\nuniform float uWindStrength;\nuniform float uWindEnabled;\n` + shader.vertexShader;
     shader.vertexShader = shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
@@ -2446,11 +3313,11 @@ export function createForestWorld(
       #ifdef USE_INSTANCING
         gPhase += instanceMatrix[3][0] * 0.52 + instanceMatrix[3][2] * 0.45;
       #endif
-      float sway = sin(gPhase) * gHeight * (0.22 + uWindStrength * 0.85) * 0.48;
+      float sway = sin(gPhase) * gHeight * (0.22 + uWindStrength * 0.85) * 0.48 * uWindEnabled;
       transformed = gRight * (position.x + sway) + vec3(0.0, position.y, 0.0);`,
     );
   };
-  grassSpriteMat.customProgramCacheKey = () => 'grass_lod_sprite_v1';
+  grassSpriteMat.customProgramCacheKey = () => 'grass_lod_sprite_v2';
 
   const distantGrassSpritesInst = new THREE.InstancedMesh(
     grassSpriteGeo,
@@ -2493,7 +3360,7 @@ export function createForestWorld(
       side: THREE.DoubleSide,
     }),
   );
-  applyFoliageWindShader(cloverMat, windTimeUniform, windStrengthUniform, 0.24, true);
+  applyFoliageWindShader(cloverMat, windTimeUniform, windStrengthUniform, windEnabledUniform, 0.24, true);
   const cloverCount = 120;
   const cloverInstances = new THREE.InstancedMesh(cloverGeo, cloverMat, cloverCount);
   for (let i = 0; i < cloverCount; i++) {
@@ -2639,6 +3506,7 @@ export function createForestWorld(
   const anchorBudPlacements: { x: number; y: number; z: number; rx: number; ry: number; rz: number }[] = [];
   const shelfFungiPlacements: { x: number; y: number; z: number; ry: number; sx: number; sy: number; sz: number }[] = [];
   const mossCushionPlacements: { x: number; y: number; z: number; sx: number; sy: number; sz: number }[] = [];
+  const mergedTwigGeos: THREE.BufferGeometry[] = [];
 
   anchors.forEach((anchor, idx) => {
     const gy = groundHeightAt(anchor.position.x, anchor.position.z);
@@ -2654,12 +3522,9 @@ export function createForestWorld(
       ),
       topPos,
     ]);
-    const twig = new THREE.Mesh(
-      trackGeo(new THREE.TubeGeometry(twigCurve, 9, anchor.isGreatAnchor ? 0.078 : 0.048, 7, false)),
-      darkWoodMat,
+    mergedTwigGeos.push(
+      new THREE.TubeGeometry(twigCurve, 9, anchor.isGreatAnchor ? 0.078 : 0.048, 7, false),
     );
-    twig.castShadow = !isSoftwareGl;
-    scene.add(twig);
 
     const forkEnd = new THREE.Vector3(
       anchor.position.x + Math.cos(idx * 1.9) * 0.28,
@@ -2670,11 +3535,9 @@ export function createForestWorld(
       new THREE.Vector3(anchor.position.x, gy + (anchor.position.y - gy) * 0.5, anchor.position.z),
       0.65,
     );
-    const forkMesh = new THREE.Mesh(
-      trackGeo(new THREE.TubeGeometry(new THREE.LineCurve3(forkMid, forkEnd), 3, 0.025, 5, false)),
-      darkWoodMat,
+    mergedTwigGeos.push(
+      new THREE.TubeGeometry(new THREE.LineCurve3(forkMid, forkEnd), 3, 0.025, 5, false),
     );
-    scene.add(forkMesh);
 
     anchorBudPlacements.push(
       { x: forkEnd.x, y: forkEnd.y, z: forkEnd.z, rx: 0.4, ry: idx, rz: 0.4 },
@@ -2732,6 +3595,16 @@ export function createForestWorld(
       }
     }
   });
+
+  // Merge all static anchor twigs & fork shoots into a single batched mesh (34 -> 1 draw call)
+  const batchedTwigsMesh = new THREE.Mesh(
+    trackGeo(mergeSimpleGeometries(mergedTwigGeos)),
+    darkWoodMat,
+  );
+  batchedTwigsMesh.castShadow = !isSoftwareGl;
+  batchedTwigsMesh.receiveShadow = !isSoftwareGl;
+  batchedTwigsMesh.matrixAutoUpdate = false;
+  scene.add(batchedTwigsMesh);
 
   const anchorBudInst = new THREE.InstancedMesh(budGeo, stemMat, anchorBudPlacements.length);
   anchorBudPlacements.forEach((b, i) => {
@@ -2854,12 +3727,14 @@ export function createForestWorld(
   for (const sx of [-3.6, 3.6]) {
     const sz = -13.5;
     const gy = groundHeightAt(sx, sz);
-    const monolith = new THREE.Mesh(runeStoneGeo, rockMat);
+    const monolith = new THREE.Mesh(runeStoneGeo, nearRockMat);
     monolith.position.set(sx, gy + 0.95, sz);
     monolith.scale.set(0.62, 1.38, 0.56);
     monolith.rotation.y = sx < 0 ? 0.55 : -0.55;
     monolith.castShadow = !isSoftwareGl;
     monolith.receiveShadow = !isSoftwareGl;
+    monolith.matrixAutoUpdate = false;
+    monolith.updateMatrix();
     scene.add(monolith);
 
     mossCushionPlacements.push({
@@ -3435,6 +4310,50 @@ export function createForestWorld(
     ),
   );
 
+  // Moon-Willow Overlook Silhouettes framing the distant Moon Fields path beyond the Stump & Birches
+  const willowTrunkGeo = trackGeo(new THREE.CylinderGeometry(0.42, 0.78, 17, 9));
+  const willowMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: 0xbac7d6,
+      map: textures.birchBarkMap,
+      normalMap: textures.birchBarkNormal,
+      roughness: 0.88,
+      metalness: 0.0,
+    }),
+  );
+  [
+    { x: -21.5, z: -6.8, ry: 0.35, tiltZ: -0.14, scale: 1.08 },
+    { x: -19.2, z: -14.2, ry: -0.6, tiltZ: -0.08, scale: 0.94 },
+    { x: 16.4, z: -15.8, ry: 0.85, tiltZ: 0.12, scale: 1.02 },
+  ].forEach((w) => {
+    const wy = groundHeightAt(w.x, w.z);
+    const trunk = new THREE.Mesh(willowTrunkGeo, willowMat);
+    trunk.position.set(w.x, wy + 7.6 * w.scale, w.z);
+    trunk.rotation.set(0.06, w.ry, w.tiltZ);
+    trunk.scale.setScalar(w.scale);
+    scene.add(trunk);
+  });
+
+  // Pooled Volumetric Wind Streaks (28 instanced silk-silver wisps driven by live windStrength)
+  const windStreakGeo = trackGeo(new THREE.PlaneGeometry(1.4, 0.032));
+  const windStreakMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: 0xd8ecff,
+      emissive: 0x7cbfff,
+      emissiveIntensity: 0.78,
+      transparent: true,
+      opacity: 0.28,
+      roughness: 0.4,
+      metalness: 0.0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  const windStreaksInst = new THREE.InstancedMesh(windStreakGeo, windStreakMat, 28);
+  windStreaksInst.frustumCulled = false;
+  scene.add(windStreaksInst);
+
   const dynamicRoots = new Set<THREE.Object3D>([
     uspokh.root,
     moonBeamsGroup,
@@ -3444,6 +4363,7 @@ export function createForestWorld(
     pantryLight,
     pondFireflyLight,
     uspokhLeafShadow,
+    windStreaksInst,
     ...anchorMeshes.values(),
   ]);
   const isDynamicObject = (obj: THREE.Object3D): boolean => {
@@ -3476,6 +4396,7 @@ export function createForestWorld(
     fernInstances,
     grassInstances,
     distantGrassSpritesInst,
+    windStreaksInst,
     lodRocks,
     cloverInstances,
     fallenLeafInstances,
@@ -3487,7 +4408,9 @@ export function createForestWorld(
     uspokh,
     windTimeUniform,
     windStrengthUniform,
+    windEnabledUniform,
     moonBeamsGroup,
+    moonBeamMat: beamMat,
     sacredFrameLight,
     greatFrameGlade,
     moonMesh,

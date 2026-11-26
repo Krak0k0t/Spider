@@ -1,5 +1,6 @@
 import type {
   ChapterPhase,
+  DewQuestState,
   DifficultyLevel,
   FearState,
   FlySpecies,
@@ -62,8 +63,11 @@ export function detectLocationZone(
   pos: Vec3,
   nettleZones: { x: number; z: number; radius: number }[],
 ): LocationZone {
-  for (const nz of nettleZones) {
-    if (Math.hypot(pos.x - nz.x, pos.z - nz.z) <= nz.radius) {
+  for (let i = 0; i < nettleZones.length; i++) {
+    const nz = nettleZones[i];
+    const dx = pos.x - nz.x;
+    const dz = pos.z - nz.z;
+    if (dx * dx + dz * dz <= nz.radius * nz.radius) {
       return 'nettle';
     }
   }
@@ -234,20 +238,18 @@ export function computeSurfaceHeight(
   for (let i = 0; i < colliders.length; i++) {
     const c = colliders[i];
     if (!c.climbable) continue;
+    const r = c.kind === 'log' && c.centerY !== undefined ? c.radius : c.radius * 0.96;
     const dx = x - c.x;
+    if (dx > r || dx < -r) continue;
     const dz = z - c.z;
+    if (dz > r || dz < -r) continue;
     const distSq = dx * dx + dz * dz;
+    if (distSq > r * r) continue;
     if (c.kind === 'log' && c.centerY !== undefined) {
-      const r = c.radius;
-      if (distSq <= r * r) {
-        const cylOffset = Math.sqrt(Math.max(0, r * r - distSq));
-        gy = Math.max(gy, c.centerY + cylOffset + 0.03);
-      }
+      const cylOffset = Math.sqrt(Math.max(0, r * r - distSq));
+      gy = Math.max(gy, c.centerY + cylOffset + 0.03);
     } else {
-      const r = c.radius * 0.96;
-      if (distSq <= r * r) {
-        gy = Math.max(gy, c.topY);
-      }
+      gy = Math.max(gy, c.topY);
     }
   }
   return gy;
@@ -277,9 +279,11 @@ export function resolveObstacleCollisions(
           continue;
         }
       }
-      const dx = pos.x - c.x;
-      const dz = pos.z - c.z;
       const minDist = c.radius + entityRadius;
+      const dx = pos.x - c.x;
+      if (dx > minDist || dx < -minDist) continue;
+      const dz = pos.z - c.z;
+      if (dz > minDist || dz < -minDist) continue;
       const distSq = dx * dx + dz * dz;
       if (distSq < minDist * minDist) {
         collided = true;
@@ -395,27 +399,28 @@ export function computeFearState(params: {
             ? 0.25
             : 0.7;
 
-  const coverDamping = isHiddenInNettle ? 0.52 : 1.0;
+  const coverDamping = isHiddenInNettle ? 0.45 : isMoving ? 1.0 : 0.78;
   const intensity = Math.max(0, Math.min(1, rawProximity * stateBoost * coverDamping));
 
-  // Moving in wind/cover creates leaf ripples that expose the spider
-  const movementNoise = isMoving ? 0.65 + windStrength * 0.35 : 0.05;
+  // Moving in wind/cover creates leaf ripples that expose the spider; standing still quiets leaves
+  const movementNoise = isMoving ? 0.65 + windStrength * 0.35 : 0.03;
   const leafRippleRisk =
     intensity > 0.25
-      ? Math.min(1, intensity * movementNoise * (isHiddenInNettle ? 0.55 : 1.0))
+      ? Math.min(1, intensity * movementNoise * (isHiddenInNettle ? 0.48 : 1.0))
       : 0;
 
   return {
     intensity,
-    aimScatterRad: intensity * 0.28,
-    hearingMultiplier: 1 + intensity * 1.4,
+    aimScatterRad: intensity * 0.24,
+    hearingMultiplier: 1 + intensity * 1.5,
     leafRippleRisk,
-    blocksPrecision: intensity > 0.78 && !isHiddenInNettle,
+    blocksPrecision: intensity > 0.8 && !isHiddenInNettle,
   };
 }
 
 /**
- * Pure AI transition step for Хряж-Сякая.
+ * Pure AI transition step for Хряж-Сякая with fair lock-on telegraphs,
+ * single-hit dive discipline, post-dive cooldowns, and stillness/dodge counterplay.
  */
 export function stepWaspAI(params: {
   state: WaspState;
@@ -428,7 +433,17 @@ export function stepWaspAI(params: {
   nearestDecoyPos: Vec3 | null;
   chapter: ChapterPhase;
   detectionScale?: number;
-}): { nextState: WaspState; nextTimer: number; triggeredDiveHit: boolean } {
+  isMoving?: boolean;
+  isDodging?: boolean;
+  diveHitCommitted?: boolean;
+  postDiveCooldown?: number;
+  diveTargetPos?: Vec3 | null;
+}): {
+  nextState: WaspState;
+  nextTimer: number;
+  triggeredDiveHit: boolean;
+  dodgedDive: boolean;
+} {
   const {
     state,
     stateTimer,
@@ -440,85 +455,138 @@ export function stepWaspAI(params: {
     nearestDecoyPos,
     chapter,
     detectionScale = 1.0,
+    isMoving = true,
+    isDodging = false,
+    diveHitCommitted = false,
+    postDiveCooldown = 0,
+    diveTargetPos = null,
   } = params;
 
   if (chapter === 'prologue' || chapter === 'ch1_threads' || chapter === 'victory') {
-    return { nextState: 'absent', nextTimer: 0, triggeredDiveHit: false };
+    return { nextState: 'absent', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
   }
 
   const timer = stateTimer + dt;
   const distToSpider = distance3D(spiderPos, waspPos);
+  // Freezing still noticeably shrinks Pavutin's silhouette to the hunting wasp
+  const effectiveDetection = detectionScale * (isMoving ? 1.0 : 0.58);
 
   if (state === 'absent') {
-    return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false };
+    return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
   }
 
   if (state === 'departed') {
-    // Returns faster in Ch3 near Right Birch, stays away longer in Ch2 victory beat
-    const returnDuration = (chapter === 'ch2_wasp' ? 28 : 20) / Math.max(0.7, detectionScale);
+    const returnDuration = (chapter === 'ch2_wasp' ? 28 : 22) / Math.max(0.7, detectionScale);
     if (timer >= returnDuration) {
-      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false };
+      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
     }
-    return { nextState: 'departed', nextTimer: timer, triggeredDiveHit: false };
+    return { nextState: 'departed', nextTimer: timer, triggeredDiveHit: false, dodgedDive: false };
   }
 
   if (state === 'lured') {
     if (timer >= 5.5) {
-      return { nextState: 'departed', nextTimer: 0, triggeredDiveHit: false };
+      return { nextState: 'departed', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
     }
-    return { nextState: 'lured', nextTimer: timer, triggeredDiveHit: false };
+    return { nextState: 'lured', nextTimer: timer, triggeredDiveHit: false, dodgedDive: false };
   }
 
   if (nearestDecoyPos && distance3D(waspPos, nearestDecoyPos) < 16) {
-    return { nextState: 'lured', nextTimer: 0, triggeredDiveHit: false };
+    return { nextState: 'lured', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
   }
 
   if (state === 'patrol') {
-    if (!isHiddenInNettle && distToSpider < 7.2 * detectionScale) {
-      return { nextState: 'investigate', nextTimer: 0, triggeredDiveHit: false };
+    if (postDiveCooldown <= 0) {
+      if (!isHiddenInNettle && distToSpider < 7.2 * effectiveDetection) {
+        return { nextState: 'investigate', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
+      }
+      if (leafRippleRisk > 0.58 && distToSpider < 11.5 * effectiveDetection) {
+        return { nextState: 'investigate', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
+      }
     }
-    if (leafRippleRisk > 0.58 && distToSpider < 11.5 * detectionScale) {
-      return { nextState: 'investigate', nextTimer: 0, triggeredDiveHit: false };
+    if (timer >= 8.5) {
+      return { nextState: 'perch', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
     }
-    if (timer >= 9.0) {
-      return { nextState: 'perch', nextTimer: 0, triggeredDiveHit: false };
-    }
-    return { nextState: 'patrol', nextTimer: timer, triggeredDiveHit: false };
+    return { nextState: 'patrol', nextTimer: timer, triggeredDiveHit: false, dodgedDive: false };
   }
 
   if (state === 'perch') {
-    // Safe window to weave a decoy! Unless spider walks right out in front of her
-    if (!isHiddenInNettle && distToSpider < 4.5 * detectionScale) {
-      return { nextState: 'investigate', nextTimer: 0, triggeredDiveHit: false };
+    // Generous window to weave a Decoy unless Pavutin walks right up in front of her
+    if (postDiveCooldown <= 0 && !isHiddenInNettle && distToSpider < 4.4 * effectiveDetection) {
+      return { nextState: 'investigate', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
     }
-    if (timer >= 7.0) {
-      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false };
+    if (timer >= 7.5) {
+      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
     }
-    return { nextState: 'perch', nextTimer: timer, triggeredDiveHit: false };
+    return { nextState: 'perch', nextTimer: timer, triggeredDiveHit: false, dodgedDive: false };
   }
 
   if (state === 'investigate') {
-    if (isHiddenInNettle && leafRippleRisk < 0.35 && timer >= 3.0) {
-      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false };
+    // Ducking into nettle cover OR freezing completely still out of immediate reach breaks her lock
+    if (isHiddenInNettle && leafRippleRisk < 0.35 && timer >= 2.2) {
+      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
     }
-    if (!isHiddenInNettle && distToSpider < 5.5 * detectionScale && timer >= 2.2) {
-      return { nextState: 'dive', nextTimer: 0, triggeredDiveHit: false };
+    if (!isMoving && distToSpider > 4.2 && timer >= 2.4) {
+      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
     }
-    if (timer >= 5.0) {
-      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false };
+    const windupDelay = Math.max(1.8, 2.5 / Math.max(0.75, detectionScale));
+    if (!isHiddenInNettle && distToSpider < 6.4 * detectionScale && timer >= windupDelay) {
+      return { nextState: 'dive', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
     }
-    return { nextState: 'investigate', nextTimer: timer, triggeredDiveHit: false };
+    if (timer >= 4.8) {
+      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: false, dodgedDive: false };
+    }
+    return { nextState: 'investigate', nextTimer: timer, triggeredDiveHit: false, dodgedDive: false };
   }
 
   if (state === 'dive') {
-    const hit = !isHiddenInNettle && distToSpider < 3.4 && timer >= 0.45 && timer < 0.7;
-    if (timer >= 1.3) {
-      return { nextState: 'patrol', nextTimer: 0, triggeredDiveHit: hit };
+    // 0.0..0.58s: high hover lock-on telegraph. 0.62s..0.95s: single impact strike check at locked aim point.
+    const strikeTarget = diveTargetPos ?? waspPos;
+    const distToStrike = distance3D(spiderPos, strikeTarget);
+    const canStrike =
+      !diveHitCommitted &&
+      !isHiddenInNettle &&
+      !isDodging &&
+      timer >= 0.62 &&
+      timer <= 0.95 &&
+      distToStrike < 2.05 &&
+      distToSpider < 2.65;
+
+    if (timer >= 1.2) {
+      return {
+        nextState: 'patrol',
+        nextTimer: 0,
+        triggeredDiveHit: false,
+        dodgedDive: !diveHitCommitted,
+      };
     }
-    return { nextState: 'dive', nextTimer: timer, triggeredDiveHit: hit };
+    return {
+      nextState: 'dive',
+      nextTimer: timer,
+      triggeredDiveHit: canStrike,
+      dodgedDive: false,
+    };
   }
 
-  return { nextState: state, nextTimer: timer, triggeredDiveHit: false };
+  return { nextState: state, nextTimer: timer, triggeredDiveHit: false, dodgedDive: false };
+}
+
+/**
+ * Computes wasp horizontal bearing in degrees relative to camera forward direction
+ * (-180..+180, where 0 = straight ahead, +90 = right, -90 = left).
+ */
+export function computeWaspRelativeBearingDeg(
+  spiderPos: Vec3,
+  camYaw: number,
+  waspPos: Vec3,
+): number {
+  const dx = waspPos.x - spiderPos.x;
+  const dz = waspPos.z - spiderPos.z;
+  const worldAngle = Math.atan2(dx, -dz);
+  const camForwardAngle = -camYaw;
+  let rel = worldAngle - camForwardAngle;
+  while (rel > Math.PI) rel -= Math.PI * 2;
+  while (rel < -Math.PI) rel += Math.PI * 2;
+  return Math.round((rel * 180) / Math.PI);
 }
 
 /**
@@ -609,11 +677,112 @@ export function createPatternRecord(params: {
     strength: spec.strength,
     lureRadius: spec.lureRadius,
     targetSpecies: spec.targetSpecies,
+    durability: 100,
+    maxDurability: 100,
     createdAt,
   };
 }
 
 export const POND_WATER_Y = -0.66;
+
+/**
+ * Computes walkable tightrope elevation when Pavutin walks near or lands atop a spun silk strand.
+ * Allows crossing over nettle groves, hollows, and rocks directly along high silk bridges.
+ */
+export function computeSilkBridgeHeight(
+  x: number,
+  z: number,
+  spiderY: number,
+  strands: SilkStrand[],
+  anchorPositions: ReadonlyMap<string, Vec3>,
+): { height: number | null; strandId: string | null } {
+  let bestY: number | null = null;
+  let bestId: string | null = null;
+  const maxCorridorSq = 0.54 * 0.54;
+
+  for (let i = 0; i < strands.length; i++) {
+    const s = strands[i];
+    const a = anchorPositions.get(s.fromId);
+    const b = anchorPositions.get(s.toId);
+    if (!a || !b) continue;
+
+    const abx = b.x - a.x;
+    const abz = b.z - a.z;
+    const lenSq = abx * abx + abz * abz;
+    if (lenSq < 0.05) continue;
+
+    const t = Math.max(0, Math.min(1, ((x - a.x) * abx + (z - a.z) * abz) / lenSq));
+    const px = a.x + abx * t;
+    const pz = a.z + abz * t;
+    const dx = x - px;
+    const dz = z - pz;
+    if (dx * dx + dz * dz > maxCorridorSq) continue;
+
+    const strandY = a.y + (b.y - a.y) * t + 0.03;
+    // Engage tightrope when jumping/landing near or climbing from connected anchor ends
+    if (spiderY >= strandY - 0.58 && (bestY === null || strandY > bestY)) {
+      bestY = strandY;
+      bestId = s.id;
+    }
+  }
+
+  return { height: bestY, strandId: bestId };
+}
+
+/**
+ * Computes silk reward for catching a fly, granting an acrobatic mid-air pounce bonus.
+ */
+export function computeAerialCatchReward(
+  baseReward: number,
+  isAirborne: boolean,
+): { totalReward: number; aerialBonus: number } {
+  if (!isAirborne) {
+    return { totalReward: baseReward, aerialBonus: 0 };
+  }
+  const aerialBonus = Math.max(6, Math.round(baseReward * 0.3));
+  return { totalReward: baseReward + aerialBonus, aerialBonus };
+}
+
+/**
+ * Species affinity multiplier: matching a web shape to its ideal prey pulls them farther and faster.
+ */
+export function computePatternSpeciesAffinity(
+  patternShape: PatternShape,
+  flySpecies: FlySpecies,
+): number {
+  if (patternShape === 'decoy') return 0;
+  if (PATTERN_SPECS[patternShape].targetSpecies === flySpecies) {
+    return 1.38;
+  }
+  if (flySpecies === 'tearbearer') {
+    return 1.2;
+  }
+  return 0.88;
+}
+
+/**
+ * Advances pattern durability over time, decaying delicate circular webs faster in gusty winds.
+ */
+export function stepPatternDurability(
+  patterns: WovenPattern[],
+  dt: number,
+  isGusty: boolean,
+  windDecayScale = 1.0,
+): boolean {
+  if (dt <= 0) return false;
+  let removedAny = false;
+  for (let i = patterns.length - 1; i >= 0; i--) {
+    const p = patterns[i];
+    if (p.shape === 'decoy') continue;
+    const weatherWear = (isGusty ? (1.12 - p.strength) * 3.8 : 0.08) * windDecayScale;
+    p.durability = Math.max(0, p.durability - weatherWear * dt);
+    if (p.durability <= 0) {
+      patterns.splice(i, 1);
+      removedAny = true;
+    }
+  }
+  return removedAny;
+}
 
 /**
  * Computes automatic combat/pounce stance blend [0..1] when Pavutin approaches a live fly.
@@ -657,4 +826,262 @@ export function computeLodStage(
   if (distance >= midDist) return 1;
   return 0;
 }
+
+export const INITIAL_DEW_QUEST: DewQuestState = {
+  fatbellyTriangle: false,
+  nimbleStar: false,
+  greenieCircle: false,
+  completed: false,
+};
+
+/**
+ * Pure progression step for optional side quest "Three Drops of Moon Dew":
+ * catching matched species from their resonant web shapes unlocks -35% wind decay on silk.
+ */
+export function stepDewQuest(
+  current: DewQuestState,
+  species: FlySpecies,
+  caughtShape: PatternShape | null,
+): { next: DewQuestState; progressed: boolean; justCompleted: boolean } {
+  if (current.completed || !caughtShape) {
+    return { next: current, progressed: false, justCompleted: false };
+  }
+  const next: DewQuestState = { ...current };
+  let progressed = false;
+
+  if (species === 'fatbelly' && caughtShape === 'triangle' && !next.fatbellyTriangle) {
+    next.fatbellyTriangle = true;
+    progressed = true;
+  } else if (species === 'nimble' && caughtShape === 'star' && !next.nimbleStar) {
+    next.nimbleStar = true;
+    progressed = true;
+  } else if (species === 'greenie' && caughtShape === 'circle' && !next.greenieCircle) {
+    next.greenieCircle = true;
+    progressed = true;
+  }
+
+  const allDone = next.fatbellyTriangle && next.nimbleStar && next.greenieCircle;
+  const justCompleted = progressed && allDone && !current.completed;
+  if (allDone) {
+    next.completed = true;
+  }
+
+  return { next, progressed, justCompleted };
+}
+
+export const LORE_ENTRY_IDS = [
+  'shadow_stitch',
+  'uspokh_wisdom',
+  'khryazh_trail',
+  'three_anchors',
+  'dew_temper',
+  'first_pattern',
+] as const;
+
+export function computeUnlockedLoreIds(params: {
+  chapter: ChapterPhase;
+  greatStrandsDone: number;
+  dewQuestCompleted: boolean;
+  caughtSpecies: Record<FlySpecies, number>;
+}): string[] {
+  const { chapter, greatStrandsDone, dewQuestCompleted, caughtSpecies } = params;
+  const unlocked: string[] = ['shadow_stitch'];
+  const totalCaught =
+    caughtSpecies.fatbelly +
+    caughtSpecies.nimble +
+    caughtSpecies.greenie +
+    caughtSpecies.tearbearer;
+
+  if (chapter !== 'prologue' || totalCaught > 0) {
+    unlocked.push('uspokh_wisdom');
+  }
+  if (chapter === 'ch2_wasp' || chapter === 'ch3_great_pattern' || chapter === 'victory') {
+    unlocked.push('khryazh_trail');
+  }
+  if (chapter === 'ch3_great_pattern' || chapter === 'victory' || greatStrandsDone > 0) {
+    unlocked.push('three_anchors');
+  }
+  if (dewQuestCompleted) {
+    unlocked.push('dew_temper');
+  }
+  if (chapter === 'victory' || greatStrandsDone >= 6) {
+    unlocked.push('first_pattern');
+  }
+  return unlocked;
+}
+
+/**
+ * Checks if the hunting wasp grazes any spun player hunting web low enough for sticky silk threads to slow her wings.
+ */
+export function isWaspSnaredInWeb(
+  waspPos: Vec3,
+  patterns: WovenPattern[],
+): boolean {
+  for (let i = 0; i < patterns.length; i++) {
+    const p = patterns[i];
+    if (p.shape === 'decoy') continue;
+    const dx = waspPos.x - p.center.x;
+    const dz = waspPos.z - p.center.z;
+    const r = Math.max(1.2, p.radius * 0.85);
+    if (dx * dx + dz * dz <= r * r && Math.abs(waspPos.y - p.center.y) <= 1.35) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Computes sensory setae (hair) vibration amplitude for Pavutin's breathing, combat readiness, and wind tremor.
+ */
+export function computeSetaeVibrationAmp(params: {
+  breathPulse: number;
+  combatBlend: number;
+  fearIntensity: number; // 0..1
+  windStrength: number;
+  isGrounded: boolean;
+}): number {
+  const { breathPulse, combatBlend, fearIntensity, windStrength, isGrounded } = params;
+  const breath = 0.0048 + Math.abs(breathPulse) * 0.0024;
+  const leapReady = combatBlend * 0.0046 + (isGrounded ? 0 : 0.0032);
+  const tension = fearIntensity * 0.0038 + Math.min(0.6, windStrength) * 0.003;
+  return Math.min(0.018, breath + leapReady + tension);
+}
+
+/**
+ * Computes front-leg idle soil tapping waveform [0..1] when Pavutin stands motionless on the ground.
+ */
+export function computeIdleTapPulse(
+  elapsed: number,
+  legIndex: number,
+  side: -1 | 1,
+  isIdleStanding: boolean,
+): number {
+  if (!isIdleStanding) return 0;
+  if (legIndex === 0) {
+    const s = Math.max(0, Math.sin(elapsed * 4.4 + (side === 1 ? 0 : 1.15)));
+    return Math.pow(s, 8);
+  }
+  if (legIndex === 1) {
+    const s = Math.max(0, Math.sin(elapsed * 2.7 + (side === 1 ? 0.6 : 2.1)));
+    return Math.pow(s, 12) * 0.35;
+  }
+  return 0;
+}
+
+/**
+ * Projects a 3D world position onto a normalized [-1..1] circular spider-web radar
+ * oriented to the camera's forward yaw (north/top of radar = camera forward).
+ */
+export function projectToRadarCoords(
+  playerPos: Vec3,
+  camYaw: number,
+  targetPos: Vec3,
+  maxRange = 22,
+): { x: number; z: number; clamped: boolean } {
+  const dx = targetPos.x - playerPos.x;
+  const dz = targetPos.z - playerPos.z;
+  const fwdX = -Math.sin(camYaw);
+  const fwdZ = -Math.cos(camYaw);
+  const rightX = Math.cos(camYaw);
+  const rightZ = -Math.sin(camYaw);
+
+  const localRight = dx * rightX + dz * rightZ;
+  const localFwd = dx * fwdX + dz * fwdZ;
+
+  const safeRange = Math.max(1, maxRange);
+  let nx = localRight / safeRange;
+  let nz = -localFwd / safeRange; // +fwd maps upward (-y in SVG/screen space)
+  const r = Math.hypot(nx, nz);
+  const clamped = r > 1;
+  if (clamped) {
+    nx /= r;
+    nz /= r;
+  }
+  return {
+    x: Number(nx.toFixed(3)),
+    z: Number(nz.toFixed(3)),
+    clamped,
+  };
+}
+
+/**
+ * Computes silk-thread tension, parabolic sag depth, and spool winding angle for the HUD SVG gauge.
+ */
+export function computeSilkThreadGauge(
+  silk: number,
+  maxSilk: number,
+): { ratio: number; sagPx: number; spoolTurnsDeg: number } {
+  const ratio = Math.max(0, Math.min(1, maxSilk > 0 ? silk / maxSilk : 0));
+  // Lower silk slackens the thread gently; full silk pulls taut with minimal sag
+  const sagPx = Number((13 - ratio * 9.5).toFixed(2));
+  const spoolTurnsDeg = Math.round(ratio * 720);
+  return { ratio, sagPx, spoolTurnsDeg };
+}
+
+export const GRAPHICS_QUALITY_ORDER = [
+  'lowest',
+  'low',
+  'medium',
+  'high',
+  'ultra',
+  'cinematic',
+] as const;
+
+/**
+ * Calm nocturnal air condenses moon-dew on mature hunting webs,
+ * gently mending weathered strands and distilling passive silk drops.
+ */
+export function stepWebDewRegeneration(params: {
+  patterns: WovenPattern[];
+  dt: number;
+  isCalm: boolean;
+  dewTempered: boolean;
+  accumulator: number;
+  silk: number;
+  maxSilk: number;
+}): {
+  nextAccumulator: number;
+  silkGained: number;
+  repairedCount: number;
+} {
+  const { patterns, dt, isCalm, dewTempered, accumulator, silk, maxSilk } = params;
+  if (!isCalm || dt <= 0 || patterns.length === 0) {
+    return { nextAccumulator: accumulator, silkGained: 0, repairedCount: 0 };
+  }
+
+  let activeHuntingWebs = 0;
+  let repairedCount = 0;
+  const repairRate = dewTempered ? 2.4 : 1.5;
+
+  for (let i = 0; i < patterns.length; i++) {
+    const p = patterns[i];
+    if (p.shape === 'decoy') continue;
+    activeHuntingWebs++;
+    if (p.durability < p.maxDurability) {
+      p.durability = Math.min(p.maxDurability, p.durability + repairRate * dt);
+      repairedCount++;
+    }
+  }
+
+  if (activeHuntingWebs === 0) {
+    return { nextAccumulator: accumulator, silkGained: 0, repairedCount: 0 };
+  }
+
+  const distillRate = (0.1 + Math.min(3, activeHuntingWebs) * 0.03) * (dewTempered ? 1.35 : 1.0);
+  let nextAcc = accumulator + dt * distillRate;
+  let silkGained = 0;
+  while (nextAcc >= 1.0) {
+    nextAcc -= 1.0;
+    if (silk + silkGained < maxSilk) {
+      silkGained += 1;
+    }
+  }
+
+  return {
+    nextAccumulator: nextAcc,
+    silkGained,
+    repairedCount,
+  };
+}
+
 
